@@ -41,12 +41,70 @@ static void lcd_backlight_init(void)
     gpio_set_level(PIN_LCD_BL, 1);
 }
 
+static uint16_t swap16(uint16_t c) { return (c >> 8) | (c << 8); }
+
+static void draw_pixel(esp_lcd_panel_handle_t panel, int x, int y, uint16_t color)
+{
+    uint16_t c = swap16(color);
+    esp_lcd_panel_draw_bitmap(panel, x, y, x + 1, y + 1, &c);
+}
+
+static void draw_hline(esp_lcd_panel_handle_t panel, int x0, int x1, int y, uint16_t color)
+{
+    int len = x1 - x0;
+    uint16_t *buf = heap_caps_malloc(len * sizeof(uint16_t), MALLOC_CAP_DMA);
+    assert(buf);
+    uint16_t c = swap16(color);
+    for (int i = 0; i < len; i++) buf[i] = c;
+    esp_lcd_panel_draw_bitmap(panel, x0, y, x1, y + 1, buf);
+    free(buf);
+}
+
+static void draw_vline(esp_lcd_panel_handle_t panel, int x, int y0, int y1, uint16_t color)
+{
+    uint16_t c = swap16(color);
+    for (int y = y0; y < y1; y++) {
+        esp_lcd_panel_draw_bitmap(panel, x, y, x + 1, y + 1, &c);
+    }
+}
+
+static void draw_axes(esp_lcd_panel_handle_t panel)
+{
+    #define AXIS_RED   0xF800
+    #define AXIS_GREEN 0x07E0
+    #define TICK_LEN   3
+
+    /* X axis — red horizontal line at y=120 */
+    draw_hline(panel, 0, LCD_H_RES, LCD_V_RES / 2, AXIS_RED);
+    /* Y axis — green vertical line at x=120 */
+    draw_vline(panel, LCD_H_RES / 2, 0, LCD_V_RES, AXIS_GREEN);
+
+    /* Ticks every 10px on X axis */
+    for (int x = 0; x < LCD_H_RES; x += 10) {
+        for (int t = -TICK_LEN; t <= TICK_LEN; t++) {
+            int y = LCD_V_RES / 2 + t;
+            if (y >= 0 && y < LCD_V_RES)
+                draw_pixel(panel, x, y, AXIS_RED);
+        }
+    }
+
+    /* Ticks every 10px on Y axis */
+    for (int y = 0; y < LCD_V_RES; y += 10) {
+        for (int t = -TICK_LEN; t <= TICK_LEN; t++) {
+            int x = LCD_H_RES / 2 + t;
+            if (x >= 0 && x < LCD_H_RES)
+                draw_pixel(panel, x, y, AXIS_GREEN);
+        }
+    }
+}
+
 static void fill_screen(esp_lcd_panel_handle_t panel, uint16_t color)
 {
     uint16_t *line_buf = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
     assert(line_buf);
+    uint16_t c = swap16(color);
     for (int i = 0; i < LCD_H_RES; i++) {
-        line_buf[i] = (color >> 8) | (color << 8);
+        line_buf[i] = c;
     }
     for (int y = 0; y < LCD_V_RES; y++) {
         esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_H_RES, y + 1, line_buf);
@@ -128,31 +186,28 @@ void app_main(void)
         ESP_LOGW(TAG, "Touch init failed — running without touch");
     }
 
-    /* Blue screen, touch changes color */
-    fill_screen(panel_handle, 0x001F);
-
-    const struct { uint16_t rgb565; const char *name; } colors[] = {
-        {0xF800, "Red"}, {0x07E0, "Green"}, {0x001F, "Blue"},
-        {0xFFE0, "Yellow"}, {0xF81F, "Magenta"}, {0x07FF, "Cyan"}, {0xFFFF, "White"},
-    };
-    int num_colors = sizeof(colors) / sizeof(colors[0]);
-    int idx = 0;
+    /* Black background + axes */
+    fill_screen(panel_handle, 0x0000);
+    draw_axes(panel_handle);
+    ESP_LOGI(TAG, "Axes drawn — touch to see coordinates");
 
     esp_log_level_set("i2c.master", ESP_LOG_NONE);
     while (1) {
         if (touch_ok) {
             chsc6x_touch_data_t td;
             if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
-                idx = (idx + 1) % num_colors;
-                fill_screen(panel_handle, colors[idx].rgb565);
-                ESP_LOGI(TAG, "Touch: x=%d y=%d -> %s", td.x, td.y, colors[idx].name);
+                ESP_LOGI(TAG, "Touch: x=%d y=%d", td.x, td.y);
+                /* Draw 5x5 white dot */
+                for (int dy = -2; dy <= 2; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int px = td.x + dx, py = td.y + dy;
+                        if (px >= 0 && px < LCD_H_RES && py >= 0 && py < LCD_V_RES)
+                            draw_pixel(panel_handle, px, py, 0xFFFF);
+                    }
+                }
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
-        } else {
-            idx = (idx + 1) % num_colors;
-            fill_screen(panel_handle, colors[idx].rgb565);
-            ESP_LOGI(TAG, "Color: %s", colors[idx].name);
         }
-        vTaskDelay(pdMS_TO_TICKS(touch_ok ? 20 : 1000));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }

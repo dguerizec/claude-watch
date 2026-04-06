@@ -68,7 +68,7 @@ esp_err_t chsc6x_read(chsc6x_handle_t handle, chsc6x_touch_data_t *data)
     /* buf[0] == 0x01 means valid touch */
     if (buf[0] == 0x01) {
         data->touched = true;
-        data->x = buf[2];
+        data->x = 239 - buf[2];
         data->y = buf[4];
     }
 
