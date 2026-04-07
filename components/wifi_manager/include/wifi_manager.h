@@ -20,6 +20,7 @@ typedef struct {
     char access_token[256];
     char refresh_token[256];
     char timezone[64];
+    char fetch_interval[8];   /* minutes between auto-fetches, as string */
 } wifi_mgr_credentials_t;
 
 /**

@@ -221,11 +221,13 @@ static esp_err_t http_post_connect(httpd_req_t *req)
     char password[65] = {0};
     char refresh_tk[256] = {0};
     char timezone[64] = {0};
+    char fetch_int[8] = {0};
 
     parse_form_field(buf, "ssid", ssid, sizeof(ssid));
     parse_form_field(buf, "password", password, sizeof(password));
     parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
     parse_form_field(buf, "timezone", timezone, sizeof(timezone));
+    parse_form_field(buf, "fetch_int", fetch_int, sizeof(fetch_int));
 
     if (strlen(ssid) == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required");
@@ -237,6 +239,7 @@ static esp_err_t http_post_connect(httpd_req_t *req)
     nvs_write_str("password", password);
     if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
     if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
+    if (strlen(fetch_int) > 0) nvs_write_str("fetch_int", fetch_int);
 
     /* Send success response */
     const char *resp = "<!DOCTYPE html><html><head>"
@@ -329,6 +332,15 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<option value=\"AEST-10AEDT,M10.1.0,M4.1.0/3\">Australia/Sydney</option>"
         "<option value=\"UTC0\">UTC</option>"
         "</select>"
+        "<label>Fetch Interval</label>"
+        "<select name=\"fetch_int\" id=\"fi\">"
+        "<option value=\"1\">1 min</option>"
+        "<option value=\"2\">2 min</option>"
+        "<option value=\"5\">5 min</option>"
+        "<option value=\"10\">10 min</option>"
+        "<option value=\"15\">15 min</option>"
+        "<option value=\"30\">30 min</option>"
+        "</select>"
         "<label>Refresh Token</label>"
         "<p class=\"hint\">Run this in a terminal, then paste the result:</p>"
         "<div class=\"cmd\" onclick=\"navigator.clipboard.writeText(this.textContent)\">jq -r '.claudeAiOauth.refreshToken' ~/.claude/.credentials.json</div>"
@@ -338,15 +350,17 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "</form>"
         "<script>"
         "document.getElementById('tz').value='%s'||'CET-1CEST,M3.5.0,M10.5.0/3';"
+        "document.getElementById('fi').value='%s'||'10';"
         "document.getElementById('f').onsubmit=function(e){"
         "e.preventDefault();"
         "var b='timezone='+encodeURIComponent(document.getElementById('tz').value)"
+        "+'&fetch_int='+encodeURIComponent(document.getElementById('fi').value)"
         "+'&refresh_tk='+encodeURIComponent(document.getElementById('rt').value);"
         "fetch('/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
         ".then(function(){var o=document.getElementById('ok');o.style.display='block';setTimeout(function(){o.style.display='none'},2000)})"
         "};"
         "</script></body></html>",
-        creds->ssid, s_sta_ip, rt_display, creds->timezone);
+        creds->ssid, s_sta_ip, rt_display, creds->timezone, creds->fetch_interval);
 
     free(creds);
     httpd_resp_set_type(req, "text/html");
@@ -372,13 +386,16 @@ static esp_err_t http_post_config(httpd_req_t *req)
 
     char refresh_tk[256] = {0};
     char timezone[64] = {0};
+    char fetch_int[8] = {0};
     parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
     parse_form_field(buf, "timezone", timezone, sizeof(timezone));
+    parse_form_field(buf, "fetch_int", fetch_int, sizeof(fetch_int));
     free(buf);
 
     /* Only update non-empty fields */
     if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
     if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
+    if (strlen(fetch_int) > 0) nvs_write_str("fetch_int", fetch_int);
     ESP_LOGI(TAG, "Config updated");
 
     httpd_resp_set_type(req, "application/json");
@@ -608,6 +625,7 @@ esp_err_t wifi_mgr_get_credentials(wifi_mgr_credentials_t *creds)
     nvs_read_str("access_tk", creds->access_token, sizeof(creds->access_token));
     nvs_read_str("refresh_tk", creds->refresh_token, sizeof(creds->refresh_token));
     nvs_read_str("timezone", creds->timezone, sizeof(creds->timezone));
+    nvs_read_str("fetch_int", creds->fetch_interval, sizeof(creds->fetch_interval));
     return ESP_OK;
 }
 

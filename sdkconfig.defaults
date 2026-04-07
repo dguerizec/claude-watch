@@ -21,3 +21,10 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # Disable WiFi driver's own NVS usage (we manage credentials ourselves)
 CONFIG_ESP_WIFI_NVS_ENABLED=n
+
+# Mitigate SPI timing race conditions on shared bus (espressif/esp-idf#17860)
+CONFIG_SPI_MASTER_IN_IRAM=y
+
+# FAT: enable long file names (stored on heap)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=63

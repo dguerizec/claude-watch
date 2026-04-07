@@ -43,6 +43,16 @@ button:active{background:#1d4ed8}
 <option value="UTC0">UTC</option>
 </select>
 
+<label for="fi">Fetch Interval</label>
+<select name="fetch_int" id="fi">
+<option value="1">1 min</option>
+<option value="2">2 min</option>
+<option value="5">5 min</option>
+<option value="10" selected>10 min</option>
+<option value="15">15 min</option>
+<option value="30">30 min</option>
+</select>
+
 <label for="refresh_tk">Refresh Token</label>
 <p class="hint">Run this in a terminal, then paste the result:</p>
 <div style="background:#1e293b;color:#e2e8f0;padding:10px;border-radius:6px;font-family:monospace;font-size:12px;word-break:break-all;margin:4px 0 8px;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent)">jq -r '.claudeAiOauth.refreshToken' ~/.claude/.credentials.json</div>
