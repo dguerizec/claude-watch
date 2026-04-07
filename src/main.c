@@ -10,6 +10,10 @@
 #include "esp_lcd_gc9a01.h"
 #include "driver/i2c_master.h"
 #include "chsc6x.h"
+#include "display_text.h"
+#include "qr_display.h"
+#include "wifi_manager.h"
+#include "api_client.h"
 
 static const char *TAG = "claude-monitor";
 
@@ -31,6 +35,17 @@ static const char *TAG = "claude-monitor";
 #define LCD_V_RES       240
 #define LCD_PIXEL_CLK   (40 * 1000 * 1000)
 
+/* Colors (RGB565) */
+#define COLOR_BLACK   0x0000
+#define COLOR_WHITE   0xFFFF
+#define COLOR_RED     0xF800
+#define COLOR_GREEN   0x07E0
+#define COLOR_DKBLUE  0x000A
+#define COLOR_DKGREEN 0x0320
+#define COLOR_DKRED   0x8000
+
+static esp_lcd_panel_handle_t s_panel = NULL;
+
 static void lcd_backlight_init(void)
 {
     gpio_config_t bl_cfg = {
@@ -42,61 +57,6 @@ static void lcd_backlight_init(void)
 }
 
 static uint16_t swap16(uint16_t c) { return (c >> 8) | (c << 8); }
-
-static void draw_pixel(esp_lcd_panel_handle_t panel, int x, int y, uint16_t color)
-{
-    uint16_t c = swap16(color);
-    esp_lcd_panel_draw_bitmap(panel, x, y, x + 1, y + 1, &c);
-}
-
-static void draw_hline(esp_lcd_panel_handle_t panel, int x0, int x1, int y, uint16_t color)
-{
-    int len = x1 - x0;
-    uint16_t *buf = heap_caps_malloc(len * sizeof(uint16_t), MALLOC_CAP_DMA);
-    assert(buf);
-    uint16_t c = swap16(color);
-    for (int i = 0; i < len; i++) buf[i] = c;
-    esp_lcd_panel_draw_bitmap(panel, x0, y, x1, y + 1, buf);
-    free(buf);
-}
-
-static void draw_vline(esp_lcd_panel_handle_t panel, int x, int y0, int y1, uint16_t color)
-{
-    uint16_t c = swap16(color);
-    for (int y = y0; y < y1; y++) {
-        esp_lcd_panel_draw_bitmap(panel, x, y, x + 1, y + 1, &c);
-    }
-}
-
-static void draw_axes(esp_lcd_panel_handle_t panel)
-{
-    #define AXIS_RED   0xF800
-    #define AXIS_GREEN 0x07E0
-    #define TICK_LEN   3
-
-    /* X axis — red horizontal line at y=120 */
-    draw_hline(panel, 0, LCD_H_RES, LCD_V_RES / 2, AXIS_RED);
-    /* Y axis — green vertical line at x=120 */
-    draw_vline(panel, LCD_H_RES / 2, 0, LCD_V_RES, AXIS_GREEN);
-
-    /* Ticks every 10px on X axis */
-    for (int x = 0; x < LCD_H_RES; x += 10) {
-        for (int t = -TICK_LEN; t <= TICK_LEN; t++) {
-            int y = LCD_V_RES / 2 + t;
-            if (y >= 0 && y < LCD_V_RES)
-                draw_pixel(panel, x, y, AXIS_RED);
-        }
-    }
-
-    /* Ticks every 10px on Y axis */
-    for (int y = 0; y < LCD_V_RES; y += 10) {
-        for (int t = -TICK_LEN; t <= TICK_LEN; t++) {
-            int x = LCD_H_RES / 2 + t;
-            if (x >= 0 && x < LCD_H_RES)
-                draw_pixel(panel, x, y, AXIS_GREEN);
-        }
-    }
-}
 
 static void fill_screen(esp_lcd_panel_handle_t panel, uint16_t color)
 {
@@ -110,6 +70,152 @@ static void fill_screen(esp_lcd_panel_handle_t panel, uint16_t color)
         esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_H_RES, y + 1, line_buf);
     }
     free(line_buf);
+}
+
+/* WiFi state change callback — updates the display */
+static void wifi_state_cb(wifi_mgr_state_t state, void *arg)
+{
+    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)arg;
+
+    switch (state) {
+    case WIFI_MGR_STATE_PROVISIONING: {
+        /* QR code encodes WiFi credentials: phone auto-connects, then captive portal opens */
+        char qr_text[80];
+        snprintf(qr_text, sizeof(qr_text), "WIFI:T:nopass;S:%s;;", wifi_mgr_get_ap_ssid());
+        fill_screen(panel, COLOR_DKBLUE);
+        display_text_draw_string_centered(panel, 8, "Setup WiFi", COLOR_WHITE, COLOR_DKBLUE, 2);
+        qr_display_show(panel, qr_text, COLOR_BLACK, COLOR_WHITE);
+        display_text_draw_string_centered(panel, 220, wifi_mgr_get_ap_ssid(), COLOR_WHITE, COLOR_DKBLUE, 1);
+        break;
+    }
+
+    case WIFI_MGR_STATE_CONNECTING:
+        fill_screen(panel, COLOR_BLACK);
+        display_text_draw_string_centered(panel, 108, "Connecting...", COLOR_WHITE, COLOR_BLACK, 2);
+        break;
+
+    case WIFI_MGR_STATE_CONNECTED: {
+        char url[40];
+        snprintf(url, sizeof(url), "http://%s", wifi_mgr_get_sta_ip());
+        fill_screen(panel, COLOR_DKGREEN);
+        display_text_draw_string_centered(panel, 8, "Connected!", COLOR_WHITE, COLOR_DKGREEN, 2);
+        qr_display_show(panel, url, COLOR_BLACK, COLOR_WHITE);
+        display_text_draw_string_centered(panel, 220, wifi_mgr_get_sta_ip(), COLOR_WHITE, COLOR_DKGREEN, 1);
+        break;
+    }
+
+    case WIFI_MGR_STATE_FAILED:
+        fill_screen(panel, COLOR_DKRED);
+        display_text_draw_string_centered(panel, 100, "WiFi Failed", COLOR_WHITE, COLOR_DKRED, 2);
+        display_text_draw_string_centered(panel, 130, "Hold to reset", COLOR_WHITE, COLOR_DKRED, 2);
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* Display usage data on screen */
+static void display_usage(api_usage_t *usage)
+{
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 30, "Claude Usage", COLOR_WHITE, COLOR_BLACK, 2);
+
+    /* 5-hour usage */
+    char line[48];
+    snprintf(line, sizeof(line), "5h: %.0f%%", usage->five_hour.utilization);
+    display_text_draw_string_centered(s_panel, 75, line, COLOR_GREEN, COLOR_BLACK, 3);
+    snprintf(line, sizeof(line), "reset %s", usage->five_hour.resets_at);
+    display_text_draw_string_centered(s_panel, 100, line, COLOR_WHITE, COLOR_BLACK, 1);
+
+    /* 7-day usage */
+    snprintf(line, sizeof(line), "7d: %.0f%%", usage->seven_day.utilization);
+    display_text_draw_string_centered(s_panel, 135, line, COLOR_GREEN, COLOR_BLACK, 3);
+    snprintf(line, sizeof(line), "reset %s", usage->seven_day.resets_at);
+    display_text_draw_string_centered(s_panel, 160, line, COLOR_WHITE, COLOR_BLACK, 1);
+
+    /* Tap hint */
+    display_text_draw_string_centered(s_panel, 210, "tap to refresh", COLOR_DKGREEN, COLOR_BLACK, 1);
+}
+
+static void display_usage_error(const char *error)
+{
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 80, "Error", COLOR_RED, COLOR_BLACK, 2);
+    display_text_draw_string_centered(s_panel, 110, error, COLOR_WHITE, COLOR_BLACK, 1);
+    display_text_draw_string_centered(s_panel, 140, "tap to retry", COLOR_WHITE, COLOR_BLACK, 1);
+}
+
+static void display_no_token(void)
+{
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 60, "No Token", COLOR_RED, COLOR_BLACK, 2);
+    display_text_draw_string_centered(s_panel, 100, "Set credentials at:", COLOR_WHITE, COLOR_BLACK, 1);
+    char url[40];
+    snprintf(url, sizeof(url), "http://%s", wifi_mgr_get_sta_ip());
+    display_text_draw_string_centered(s_panel, 120, url, COLOR_GREEN, COLOR_BLACK, 1);
+    qr_display_show(s_panel, url, COLOR_WHITE, COLOR_BLACK);
+}
+
+static TaskHandle_t s_fetch_task = NULL;
+
+static void fetch_usage_task(void *arg)
+{
+    wifi_mgr_credentials_t creds;
+    wifi_mgr_get_credentials(&creds);
+
+    if (strlen(creds.refresh_token) == 0) {
+        display_no_token();
+        s_fetch_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Show loading */
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 108, "Loading...", COLOR_WHITE, COLOR_BLACK, 2);
+
+    api_usage_t usage;
+    esp_err_t err = api_client_get_usage(creds.access_token, creds.refresh_token, &usage);
+
+    if (err == ESP_OK && usage.valid) {
+        display_usage(&usage);
+    } else {
+        display_usage_error(usage.error);
+    }
+
+    s_fetch_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void fetch_and_display_usage(void)
+{
+    /* Prevent concurrent fetches */
+    if (s_fetch_task != NULL) return;
+    /* TLS needs ~16KB stack */
+    xTaskCreate(fetch_usage_task, "fetch_usage", 16384, NULL, 5, &s_fetch_task);
+}
+
+/* Check for touch-hold reset gesture (3 seconds) */
+static bool check_reset_gesture(chsc6x_handle_t touch)
+{
+    if (!touch) return false;
+
+    ESP_LOGI(TAG, "Hold touch 3s to reset WiFi...");
+    display_text_draw_string_centered(s_panel, 130, "Hold 3s: reset", COLOR_WHITE, COLOR_BLACK, 1);
+
+    int held_count = 0;
+    for (int i = 0; i < 30; i++) {  /* 30 × 100ms = 3s */
+        chsc6x_touch_data_t td;
+        if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
+            held_count++;
+        } else {
+            held_count = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    return held_count >= 25;  /* ~2.5s continuous hold */
 }
 
 void app_main(void)
@@ -144,23 +250,22 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_config, &io_handle));
 
     /* GC9A01 panel driver */
-    esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = -1,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(io_handle, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(io_handle, &panel_config, &s_panel));
 
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     ESP_LOGI(TAG, "Display initialized — 240x240 GC9A01");
 
     /* I2C bus */
-    ESP_LOGI(TAG, "I2C init: SDA=GPIO%d SCL=GPIO%d", PIN_TOUCH_SDA, PIN_TOUCH_SCL);
     i2c_master_bus_config_t i2c_bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_NUM_0,
@@ -181,33 +286,52 @@ void app_main(void)
     bool touch_ok = (chsc6x_init(&touch_cfg, &touch) == ESP_OK);
 
     if (touch_ok) {
-        ESP_LOGI(TAG, "Touch ready — tap to change color");
+        ESP_LOGI(TAG, "Touch ready");
     } else {
         ESP_LOGW(TAG, "Touch init failed — running without touch");
     }
 
-    /* Black background + axes */
-    fill_screen(panel_handle, 0x0000);
-    draw_axes(panel_handle);
-    ESP_LOGI(TAG, "Axes drawn — touch to see coordinates");
+    /* Boot splash */
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 100, "Claude Monitor", COLOR_WHITE, COLOR_BLACK, 2);
+    display_text_draw_string_centered(s_panel, 120, "Starting...", COLOR_GREEN, COLOR_BLACK, 2);
 
+    /* Check for WiFi reset gesture */
     esp_log_level_set("i2c.master", ESP_LOG_NONE);
+    if (touch_ok && check_reset_gesture(touch)) {
+        fill_screen(s_panel, COLOR_BLACK);
+        display_text_draw_string_centered(s_panel, 108, "WiFi Reset!", COLOR_RED, COLOR_BLACK, 2);
+        /* Init NVS first so we can erase */
+        wifi_mgr_init(wifi_state_cb, s_panel);
+        wifi_mgr_erase_credentials();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    } else {
+        /* Normal init */
+        wifi_mgr_init(wifi_state_cb, s_panel);
+    }
+
+    /* Start WiFi (provisioning or station) */
+    wifi_mgr_start();
+
+    /* Main loop */
     while (1) {
         if (touch_ok) {
             chsc6x_touch_data_t td;
             if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
-                ESP_LOGI(TAG, "Touch: x=%d y=%d", td.x, td.y);
-                /* Draw 5x5 white dot */
-                for (int dy = -2; dy <= 2; dy++) {
-                    for (int dx = -2; dx <= 2; dx++) {
-                        int px = td.x + dx, py = td.y + dy;
-                        if (px >= 0 && px < LCD_H_RES && py >= 0 && py < LCD_V_RES)
-                            draw_pixel(panel_handle, px, py, 0xFFFF);
-                    }
+                wifi_mgr_state_t st = wifi_mgr_get_state();
+                if (st == WIFI_MGR_STATE_CONNECTED) {
+                    ESP_LOGI(TAG, "Touch — fetching usage");
+                    fetch_and_display_usage();
+                    /* Debounce: wait for touch release */
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                } else if (st == WIFI_MGR_STATE_FAILED) {
+                    ESP_LOGI(TAG, "Touch in FAILED state — erasing and rebooting");
+                    wifi_mgr_erase_credentials();
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    esp_restart();
                 }
-                vTaskDelay(pdMS_TO_TICKS(200));
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

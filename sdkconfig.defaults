@@ -11,3 +11,13 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_240=y
 
 # Log level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Custom partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Main task stack (WiFi + HTTP need more)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Disable WiFi driver's own NVS usage (we manage credentials ourselves)
+CONFIG_ESP_WIFI_NVS_ENABLED=n
