@@ -16,8 +16,9 @@ static const char *TAG = "api_client";
 #define CLIENT_ID "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 #define MAX_RESPONSE_SIZE 2048
 
-/* Parse "2026-04-07T04:00:00.623562+00:00" into local time "Apr 7 06:00" */
-static void parse_reset_time(const char *iso, char *out, size_t out_size)
+/* Parse "2026-04-07T04:00:00.623562+00:00" into local time "Apr 7 06:00"
+ * and return the UTC epoch timestamp. */
+static time_t parse_reset_time(const char *iso, char *out, size_t out_size)
 {
     int year, month, day, hour, minute, second;
     if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) >= 5) {
@@ -49,9 +50,11 @@ static void parse_reset_time(const char *iso, char *out, size_t out_size)
         snprintf(out, out_size, "%s %d %02d:%02d",
                  months[local.tm_mon], local.tm_mday,
                  local.tm_hour, local.tm_min);
+        return t;
     } else {
         strncpy(out, iso, out_size - 1);
         out[out_size - 1] = '\0';
+        return 0;
     }
 }
 
@@ -69,7 +72,8 @@ static void parse_tier(cJSON *obj, api_usage_tier_t *tier)
 
     cJSON *resets = cJSON_GetObjectItem(obj, "resets_at");
     if (resets && cJSON_IsString(resets)) {
-        parse_reset_time(cJSON_GetStringValue(resets), tier->resets_at, sizeof(tier->resets_at));
+        tier->resets_at_epoch = parse_reset_time(cJSON_GetStringValue(resets),
+                                                  tier->resets_at, sizeof(tier->resets_at));
     }
 }
 

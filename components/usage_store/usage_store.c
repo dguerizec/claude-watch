@@ -17,22 +17,10 @@ static spi_host_device_t s_spi_host;
 static int s_cs_gpio;
 static bool s_configured = false;
 
-esp_err_t usage_store_init(spi_host_device_t spi_host, int cs_gpio)
-{
-    s_spi_host = spi_host;
-    s_cs_gpio = cs_gpio;
-    s_configured = true;
-    ESP_LOGI(TAG, "SD card configured on SPI%d, CS=GPIO%d (lazy mount)", spi_host + 1, cs_gpio);
-    return ESP_OK;
-}
+/* ── Helpers ─────────────────────────────────────────────────────────── */
 
-esp_err_t usage_store_append(float five_hour, float seven_day)
+static sdmmc_card_t *mount_sd(void)
 {
-    if (!s_configured) return ESP_ERR_INVALID_STATE;
-
-    /* Mount SD card — only while writing to avoid SPI bus conflict with LCD.
-     * Two SPI devices on the same bus cause an ISR race condition in the
-     * ESP-IDF SPI master driver (espressif/esp-idf#17860). */
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = s_spi_host;
 
@@ -50,11 +38,35 @@ esp_err_t usage_store_append(float five_hour, float seven_day)
     esp_err_t ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config,
                                              &mount_config, &card);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "SD card mount failed: %s — skipping", esp_err_to_name(ret));
-        return ret;
+        ESP_LOGW(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+        return NULL;
     }
+    return card;
+}
 
-    /* Build path */
+static void unmount_sd(sdmmc_card_t *card)
+{
+    esp_vfs_fat_sdcard_unmount(MOUNT_POINT, card);
+}
+
+/* ── Public API ──────────────────────────────────────────────────────── */
+
+esp_err_t usage_store_init(spi_host_device_t spi_host, int cs_gpio)
+{
+    s_spi_host = spi_host;
+    s_cs_gpio = cs_gpio;
+    s_configured = true;
+    ESP_LOGI(TAG, "SD card configured on SPI%d, CS=GPIO%d (lazy mount)", spi_host + 1, cs_gpio);
+    return ESP_OK;
+}
+
+esp_err_t usage_store_append(float five_hour, float seven_day)
+{
+    if (!s_configured) return ESP_ERR_INVALID_STATE;
+
+    sdmmc_card_t *card = mount_sd();
+    if (!card) return ESP_FAIL;
+
     time_t now = time(NULL);
     struct tm local;
     localtime_r(&now, &local);
@@ -74,7 +86,7 @@ esp_err_t usage_store_append(float five_hour, float seven_day)
     FILE *f = fopen(path, "a");
     if (!f) {
         ESP_LOGE(TAG, "Failed to open %s", path);
-        esp_vfs_fat_sdcard_unmount(MOUNT_POINT, card);
+        unmount_sd(card);
         return ESP_FAIL;
     }
 
@@ -87,7 +99,52 @@ esp_err_t usage_store_append(float five_hour, float seven_day)
 
     ESP_LOGI(TAG, "Stored: %.1f%% / %.1f%% → %s", five_hour, seven_day, path);
 
-    /* Unmount immediately — keeps SD SPI device off the bus so LCD works */
-    esp_vfs_fat_sdcard_unmount(MOUNT_POINT, card);
+    unmount_sd(card);
     return ESP_OK;
+}
+
+int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points)
+{
+    if (!s_configured) return 0;
+
+    sdmmc_card_t *card = mount_sd();
+    if (!card) return 0;
+
+    struct tm from_tm, to_tm;
+    localtime_r(&from, &from_tm);
+    localtime_r(&to, &to_tm);
+
+    int count = 0;
+    int y = from_tm.tm_year + 1900, m = from_tm.tm_mon + 1;
+    int y_end = to_tm.tm_year + 1900, m_end = to_tm.tm_mon + 1;
+
+    while ((y < y_end || (y == y_end && m <= m_end)) && count < max_points) {
+        char path[64];
+        snprintf(path, sizeof(path), MOUNT_POINT "/ccusage/usage_%04d-%02d.csv", y, m);
+
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char line[64];
+            fgets(line, sizeof(line), f);  /* skip CSV header */
+            while (fgets(line, sizeof(line), f) && count < max_points) {
+                long ts;
+                float five_h, seven_d;
+                if (sscanf(line, "%ld,%f,%f", &ts, &five_h, &seven_d) == 3) {
+                    if (ts >= (long)from && ts <= (long)to) {
+                        buf[count].timestamp = (time_t)ts;
+                        buf[count].value = seven_d;
+                        count++;
+                    }
+                }
+            }
+            fclose(f);
+        }
+
+        m++;
+        if (m > 12) { m = 1; y++; }
+    }
+
+    ESP_LOGI(TAG, "Read %d data points from SD", count);
+    unmount_sd(card);
+    return count;
 }

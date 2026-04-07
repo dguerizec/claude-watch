@@ -21,6 +21,7 @@
 #include "wifi_manager.h"
 #include "api_client.h"
 #include "usage_store.h"
+#include "polar_graph.h"
 
 static const char *TAG = "claude-monitor";
 
@@ -63,6 +64,7 @@ typedef enum {
     DISP_MSG_USAGE,
     DISP_MSG_ERROR,
     DISP_MSG_NO_TOKEN,
+    DISP_MSG_TOGGLE,
 } disp_msg_type_t;
 
 typedef struct {
@@ -255,7 +257,7 @@ static void draw_usage_screen(api_usage_t *usage)
     snprintf(line, sizeof(line), "reset %s", usage->seven_day.resets_at);
     display_text_draw_string_centered(s_panel, 160, line, COLOR_WHITE, COLOR_BLACK, 1);
 
-    display_text_draw_string_centered(s_panel, 210, "tap to refresh", COLOR_DKGREEN, COLOR_BLACK, 1);
+    display_text_draw_string_centered(s_panel, 210, "tap: graph", COLOR_DKGREEN, COLOR_BLACK, 1);
 }
 
 static void draw_error_screen(const char *error)
@@ -277,7 +279,37 @@ static void draw_no_token_screen(void)
     qr_display_show(s_panel, url, COLOR_WHITE, COLOR_BLACK);
 }
 
+/* ─── Graph screen ──────────────────────────────────────────────────── */
+
+#define MAX_GRAPH_POINTS 2048
+
+static void draw_graph_screen(api_usage_t *usage)
+{
+    time_t period_end = usage->seven_day.resets_at_epoch;
+    time_t period_start = period_end - 7 * 24 * 3600;
+    time_t now = time(NULL);
+
+    usage_data_point_t *points = malloc(MAX_GRAPH_POINTS * sizeof(usage_data_point_t));
+    if (!points) {
+        ESP_LOGE(TAG, "Failed to alloc graph data");
+        return;
+    }
+
+    int n = usage_store_read(period_start, now, points, MAX_GRAPH_POINTS);
+    polar_graph_draw(s_panel, points, n, period_start, now);
+    free(points);
+
+    /* Overlay current value at center (center = 0% so no data overlap) */
+    char pct[16];
+    snprintf(pct, sizeof(pct), "%.0f%%", usage->seven_day.utilization);
+    display_text_draw_string_centered(s_panel, 113, pct, 0xFFFF, 0x0000, 2);
+}
+
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
+
+static bool s_showing_graph = false;
+static api_usage_t s_last_usage = {0};
+static bool s_has_usage = false;
 
 static void display_task(void *arg)
 {
@@ -309,13 +341,18 @@ static void display_task(void *arg)
             break;
 
         case DISP_MSG_LOADING:
-            draw_loading_screen();
+            if (!s_showing_graph)
+                draw_loading_screen();
             break;
 
         case DISP_MSG_USAGE:
-            /* SD write first (mount/unmount), then LCD draw — sequential, no conflict */
+            s_last_usage = msg.usage;
+            s_has_usage = true;
             usage_store_append(msg.usage.five_hour.utilization, msg.usage.seven_day.utilization);
-            draw_usage_screen(&msg.usage);
+            if (s_showing_graph)
+                draw_graph_screen(&msg.usage);
+            else
+                draw_usage_screen(&msg.usage);
             break;
 
         case DISP_MSG_ERROR:
@@ -324,6 +361,15 @@ static void display_task(void *arg)
 
         case DISP_MSG_NO_TOKEN:
             draw_no_token_screen();
+            break;
+
+        case DISP_MSG_TOGGLE:
+            if (!s_has_usage) break;
+            s_showing_graph = !s_showing_graph;
+            if (s_showing_graph)
+                draw_graph_screen(&s_last_usage);
+            else
+                draw_usage_screen(&s_last_usage);
             break;
         }
     }
@@ -459,7 +505,7 @@ void app_main(void)
     /* Create display queue + task BEFORE starting WiFi.
      * From this point on, only display_task touches the LCD/SD. */
     s_display_queue = xQueueCreate(4, sizeof(disp_msg_t));
-    xTaskCreate(display_task, "display", 8192, NULL, 5, NULL);
+    xTaskCreate(display_task, "display", 12288, NULL, 5, NULL);
 
     /* Start WiFi — callbacks will now go through the queue */
     wifi_mgr_start();
@@ -471,8 +517,9 @@ void app_main(void)
             if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
                 wifi_mgr_state_t st = wifi_mgr_get_state();
                 if (st == WIFI_MGR_STATE_CONNECTED) {
-                    ESP_LOGI(TAG, "Touch — fetching usage");
-                    fetch_and_display_usage();
+                    ESP_LOGI(TAG, "Touch — toggling view");
+                    disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE };
+                    xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
                     vTaskDelay(pdMS_TO_TICKS(500));
                 } else if (st == WIFI_MGR_STATE_FAILED) {
                     ESP_LOGI(TAG, "Touch in FAILED state — erasing and rebooting");

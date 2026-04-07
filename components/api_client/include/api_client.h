@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <time.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -9,7 +10,8 @@ extern "C" {
 
 typedef struct {
     float utilization;
-    char resets_at[32];  /* "HH:MM" or "Apr 10 12:00" */
+    char resets_at[32];      /* "Apr 10 12:00" (display string) */
+    time_t resets_at_epoch;  /* UTC epoch of reset time */
 } api_usage_tier_t;
 
 typedef struct {
