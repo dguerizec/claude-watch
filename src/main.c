@@ -281,12 +281,13 @@ static void draw_no_token_screen(void)
 
 /* ─── Graph screen ──────────────────────────────────────────────────── */
 
-#define MAX_GRAPH_POINTS 2048
+#define MAX_GRAPH_POINTS 4096
+#define GRAPH_WEEKS      5
 
 static void draw_graph_screen(api_usage_t *usage)
 {
     time_t now = time(NULL);
-    time_t period_start = now - 7 * 24 * 3600;
+    time_t period_start = now - GRAPH_WEEKS * 7 * 24 * 3600;
     time_t period_end = usage->seven_day.resets_at_epoch;
 
     usage_data_point_t *points = malloc(MAX_GRAPH_POINTS * sizeof(usage_data_point_t));
@@ -295,7 +296,15 @@ static void draw_graph_screen(api_usage_t *usage)
         return;
     }
 
-    int n = usage_store_read(period_start, now, points, MAX_GRAPH_POINTS);
+    /* Two-pass read: old data downsampled, recent data full resolution */
+    time_t week_ago = now - 7 * 24 * 3600;
+    int old_budget = MAX_GRAPH_POINTS / 4;
+    int n_old = usage_store_read(period_start, week_ago - 1, points, old_budget, 8);
+    int n_recent = usage_store_read(week_ago, now, points + n_old,
+                                    MAX_GRAPH_POINTS - n_old, 1);
+    int n = n_old + n_recent;
+    ESP_LOGI(TAG, "Graph data: %d old (stride 8) + %d recent = %d", n_old, n_recent, n);
+
     polar_graph_draw(s_panel, points, n, period_end, now);
     free(points);
 
@@ -325,15 +334,20 @@ static void display_task(void *arg)
                 draw_provisioning_screen();
                 break;
             case WIFI_MGR_STATE_CONNECTING:
-                draw_connecting_screen();
+                /* Only show connecting screen on first boot, not reconnects */
+                if (!s_has_usage)
+                    draw_connecting_screen();
                 break;
             case WIFI_MGR_STATE_CONNECTED:
                 init_time_sync();
-                draw_connected_screen();
+                if (!s_has_usage)
+                    draw_connected_screen();
                 start_auto_fetch();
                 break;
             case WIFI_MGR_STATE_FAILED:
-                draw_failed_screen();
+                /* Only show failure if we have nothing else to display */
+                if (!s_has_usage)
+                    draw_failed_screen();
                 break;
             default:
                 break;
@@ -341,7 +355,8 @@ static void display_task(void *arg)
             break;
 
         case DISP_MSG_LOADING:
-            if (!s_showing_graph)
+            /* Never overwrite existing display for a background fetch */
+            if (!s_has_usage)
                 draw_loading_screen();
             break;
 
@@ -356,7 +371,11 @@ static void display_task(void *arg)
             break;
 
         case DISP_MSG_ERROR:
-            draw_error_screen(msg.usage.error);
+            /* Don't overwrite display for a background fetch error */
+            if (!s_has_usage)
+                draw_error_screen(msg.usage.error);
+            else
+                ESP_LOGW(TAG, "Fetch error (display unchanged): %s", msg.usage.error);
             break;
 
         case DISP_MSG_NO_TOKEN:

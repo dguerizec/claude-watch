@@ -103,9 +103,10 @@ esp_err_t usage_store_append(float five_hour, float seven_day)
     return ESP_OK;
 }
 
-int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points)
+int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points, int stride)
 {
     if (!s_configured) return 0;
+    if (stride < 1) stride = 1;
 
     sdmmc_card_t *card = mount_sd();
     if (!card) return 0;
@@ -115,6 +116,7 @@ int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_po
     localtime_r(&to, &to_tm);
 
     int count = 0;
+    int skip = 0;
     int y = from_tm.tm_year + 1900, m = from_tm.tm_mon + 1;
     int y_end = to_tm.tm_year + 1900, m_end = to_tm.tm_mon + 1;
 
@@ -131,6 +133,11 @@ int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_po
                 float five_h, seven_d;
                 if (sscanf(line, "%ld,%f,%f", &ts, &five_h, &seven_d) == 3) {
                     if (ts >= (long)from && ts <= (long)to) {
+                        if (++skip >= stride) {
+                            skip = 0;
+                        } else {
+                            continue;
+                        }
                         buf[count].timestamp = (time_t)ts;
                         buf[count].value = seven_d;
                         count++;

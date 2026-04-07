@@ -16,6 +16,7 @@ static const char *TAG = "polar_graph";
 #define STRIP_H  40       /* rows per strip — 240*40*2 = 19,200 bytes */
 #define PERIOD_S (7 * 24 * 3600)
 #define SPIRAL_N 180      /* points for burn-rate spiral (every 2°) */
+#define NUM_WEEKS 5       /* current + 4 previous */
 
 static inline uint16_t sw(uint16_t c) { return (c >> 8) | (c << 8); }
 
@@ -58,19 +59,6 @@ static void draw_circle(uint16_t *strip, int sy, int sh, int r, uint16_t c)
     }
 }
 
-static void draw_circles(uint16_t *strip, int sy, int sh, uint16_t c)
-{
-    static const int radii[] = {
-        MIN_R,
-        MIN_R + (MAX_R - MIN_R) / 4,
-        MIN_R + (MAX_R - MIN_R) / 2,
-        MIN_R + (MAX_R - MIN_R) * 3 / 4,
-        MAX_R
-    };
-    for (int i = 0; i < 5; i++)
-        draw_circle(strip, sy, sh, radii[i], c);
-}
-
 static inline void polar_xy(float angle, float r, int *x, int *y)
 {
     *x = CX + (int)(r * sinf(angle));
@@ -78,13 +66,33 @@ static inline void polar_xy(float angle, float r, int *x, int *y)
 }
 
 /* Compute burn rate (0–100) for a timestamp within its billing period */
-static inline float burn_rate_at(time_t ts, time_t billing_start)
+static inline float burn_rate_at(time_t ts, time_t week_start)
 {
-    float frac = (float)(ts - billing_start) / PERIOD_S;
+    float frac = (float)(ts - week_start) / PERIOD_S;
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     return frac * 100.0f;
 }
+
+/* ── Color tables — progressively dimmer for older weeks ─────────────── */
+
+/* Green (under budget): 00FF00 → dimmer each week */
+static const uint16_t greens[NUM_WEEKS] = {
+    0x07E0,   /* week 0 (current): bright green */
+    0x04E0,   /* week 1 */
+    0x02E0,   /* week 2 */
+    0x0160,   /* week 3 */
+    0x00C0,   /* week 4 (oldest) */
+};
+
+/* Red (over budget): FF0000 → dimmer each week */
+static const uint16_t reds[NUM_WEEKS] = {
+    0xF800,   /* week 0 (current): bright red */
+    0xA000,   /* week 1 */
+    0x6000,   /* week 2 */
+    0x3000,   /* week 3 */
+    0x1800,   /* week 4 (oldest) */
+};
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
@@ -92,42 +100,24 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
                       const usage_data_point_t *points, int num_points,
                       time_t period_end, time_t now)
 {
-    time_t billing_start = period_end - PERIOD_S;
-    time_t prev_billing_start = billing_start - PERIOD_S;
-
-    /* Find boundary between previous and current billing week */
-    int boundary = num_points;
-    for (int i = 0; i < num_points; i++) {
-        if (points[i].timestamp >= billing_start) {
-            boundary = i;
-            break;
-        }
-    }
-
-    /* Pre-compute screen coordinates and per-point colors */
-    int *scr_x = NULL, *scr_y = NULL;
+    /* Pre-compute per-point: screen coords, week index, color.
+     * int16_t for coords (0–239 range) to halve memory vs int. */
+    int16_t *scr_x = NULL, *scr_y = NULL;
+    uint8_t *pt_week = NULL;
     uint16_t *pt_color = NULL;
 
-    /* Colors (byte-swapped for SPI) */
-    uint16_t c_grid     = sw(0x2945);   /* dark gray — reference circles */
-    uint16_t c_tick     = sw(0x4208);   /* medium gray — day ticks */
-    uint16_t c_spiral   = sw(0x4208);   /* dark gray — burn rate spiral */
-    uint16_t c_now      = sw(0x4208);   /* dark gray — "now" hand */
-    uint16_t c_curr_ok  = sw(0x07E0);   /* bright green — current week, under budget */
-    uint16_t c_curr_over= sw(0xF800);   /* bright red — current week, over budget */
-    uint16_t c_prev_ok  = sw(0x03E0);   /* dark green — previous week, under budget */
-    uint16_t c_prev_over= sw(0x7800);   /* dark red — previous week, over budget */
-
     if (num_points > 0) {
-        scr_x = malloc(num_points * sizeof(int));
-        scr_y = malloc(num_points * sizeof(int));
+        scr_x = malloc(num_points * sizeof(int16_t));
+        scr_y = malloc(num_points * sizeof(int16_t));
+        pt_week = malloc(num_points);
         pt_color = malloc(num_points * sizeof(uint16_t));
-        if (!scr_x || !scr_y || !pt_color) {
-            free(scr_x); free(scr_y); free(pt_color);
+        if (!scr_x || !scr_y || !pt_week || !pt_color) {
+            free(scr_x); free(scr_y); free(pt_week); free(pt_color);
             ESP_LOGE(TAG, "Failed to alloc point arrays");
             return;
         }
         for (int i = 0; i < num_points; i++) {
+            /* Angular position (wraps every 7 days, north = period_end) */
             float frac = (float)(points[i].timestamp - period_end) / PERIOD_S;
             frac = fmodf(frac, 1.0f);
             if (frac < 0.0f) frac += 1.0f;
@@ -135,21 +125,26 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             float r = MIN_R + (points[i].value / 100.0f) * (MAX_R - MIN_R);
             if (r < MIN_R) r = MIN_R;
             if (r > MAX_R) r = MAX_R;
-            polar_xy(angle, r, &scr_x[i], &scr_y[i]);
+            int sx, sy;
+            polar_xy(angle, r, &sx, &sy);
+            scr_x[i] = sx;
+            scr_y[i] = sy;
 
-            /* Determine color: green if under burn rate, red if over */
-            bool is_current = (i >= boundary);
-            time_t bs = is_current ? billing_start : prev_billing_start;
-            float br = burn_rate_at(points[i].timestamp, bs);
+            /* Week index: 0 = current, 1 = previous, ... */
+            int w = (int)((float)(period_end - points[i].timestamp) / PERIOD_S);
+            if (w < 0) w = 0;
+            if (w >= NUM_WEEKS) w = NUM_WEEKS - 1;
+            pt_week[i] = w;
+
+            /* Color: green/red based on burn rate, dimmed by week */
+            time_t week_start = period_end - (w + 1) * (time_t)PERIOD_S;
+            float br = burn_rate_at(points[i].timestamp, week_start);
             bool over = (points[i].value >= br);
-            if (is_current)
-                pt_color[i] = over ? c_curr_over : c_curr_ok;
-            else
-                pt_color[i] = over ? c_prev_over : c_prev_ok;
+            pt_color[i] = sw(over ? reds[w] : greens[w]);
         }
     }
 
-    /* Pre-compute burn-rate spiral (Archimedean: 0% at north → 100% at north) */
+    /* Pre-compute burn-rate spiral */
     int spi_x[SPIRAL_N], spi_y[SPIRAL_N];
     for (int i = 0; i < SPIRAL_N; i++) {
         float frac = (float)i / SPIRAL_N;
@@ -158,7 +153,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
         polar_xy(angle, r, &spi_x[i], &spi_y[i]);
     }
 
-    /* Pre-compute "now" hand endpoint */
+    /* Pre-compute "now" hand */
     float now_frac = (float)(now - period_end) / PERIOD_S;
     now_frac = fmodf(now_frac, 1.0f);
     if (now_frac < 0.0f) now_frac += 1.0f;
@@ -167,13 +162,19 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     polar_xy(now_angle, MIN_R, &now_x0, &now_y0);
     polar_xy(now_angle, MAX_R, &now_x1, &now_y1);
 
-    /* Pre-compute day tick endpoints (7 ticks) */
+    /* Pre-compute day ticks */
     int tick_x0[7], tick_y0[7], tick_x1[7], tick_y1[7];
     for (int d = 0; d < 7; d++) {
         float a = 2.0f * M_PI * d / 7.0f;
         polar_xy(a, MAX_R - 8, &tick_x0[d], &tick_y0[d]);
         polar_xy(a, MAX_R,     &tick_x1[d], &tick_y1[d]);
     }
+
+    /* Colors for non-data elements */
+    uint16_t c_grid   = sw(0x2945);
+    uint16_t c_tick   = sw(0x4208);
+    uint16_t c_spiral = sw(0x4208);
+    uint16_t c_now    = sw(0x4208);
 
     /* Double-buffered strip rendering */
     size_t strip_bytes = W * STRIP_H * sizeof(uint16_t);
@@ -182,7 +183,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     buf[1] = heap_caps_malloc(strip_bytes, MALLOC_CAP_DMA);
     if (!buf[0] || !buf[1]) {
         free(buf[0]); free(buf[1]);
-        free(scr_x); free(scr_y); free(pt_color);
+        free(scr_x); free(scr_y); free(pt_week); free(pt_color);
         ESP_LOGE(TAG, "Failed to alloc strip buffers");
         return;
     }
@@ -193,8 +194,9 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
         uint16_t *strip = buf[bi];
         memset(strip, 0, W * sh * sizeof(uint16_t));
 
-        /* Reference circles */
-        draw_circles(strip, sy, sh, c_grid);
+        /* Reference circles (0% and 100%) */
+        draw_circle(strip, sy, sh, MIN_R, c_grid);
+        draw_circle(strip, sy, sh, MAX_R, c_grid);
 
         /* Day tick marks */
         for (int d = 0; d < 7; d++) {
@@ -212,13 +214,15 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             sline(strip, sy, sh, spi_x[i], spi_y[i], spi_x[i+1], spi_y[i+1], c_spiral);
         }
 
-        /* Data polyline — color per segment based on burn rate */
-        for (int i = 0; i < num_points - 1; i++) {
-            if (i + 1 == boundary) continue;  /* break at period boundary */
-            int ymin = scr_y[i] < scr_y[i+1] ? scr_y[i] : scr_y[i+1];
-            int ymax = scr_y[i] > scr_y[i+1] ? scr_y[i] : scr_y[i+1];
-            if (ymax < sy || ymin >= sy + sh) continue;
-            sline(strip, sy, sh, scr_x[i], scr_y[i], scr_x[i+1], scr_y[i+1], pt_color[i + 1]);
+        /* Data polyline — oldest week first, newest last (z-order) */
+        for (int w = NUM_WEEKS - 1; w >= 0; w--) {
+            for (int i = 0; i < num_points - 1; i++) {
+                if (pt_week[i] != w || pt_week[i + 1] != w) continue;
+                int ymin = scr_y[i] < scr_y[i+1] ? scr_y[i] : scr_y[i+1];
+                int ymax = scr_y[i] > scr_y[i+1] ? scr_y[i] : scr_y[i+1];
+                if (ymax < sy || ymin >= sy + sh) continue;
+                sline(strip, sy, sh, scr_x[i], scr_y[i], scr_x[i+1], scr_y[i+1], pt_color[i + 1]);
+            }
         }
 
         /* "Now" hand — from MIN_R to MAX_R only */
@@ -239,6 +243,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     free(buf[1]);
     free(scr_x);
     free(scr_y);
+    free(pt_week);
     free(pt_color);
-    ESP_LOGI(TAG, "Graph drawn: %d points, boundary=%d", num_points, boundary);
+    ESP_LOGI(TAG, "Graph drawn: %d points, %d weeks", num_points, NUM_WEEKS);
 }

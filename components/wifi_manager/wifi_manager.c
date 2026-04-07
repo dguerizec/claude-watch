@@ -634,10 +634,12 @@ esp_err_t wifi_mgr_erase_credentials(void)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    nvs_erase_all(h);
+    /* Only erase WiFi credentials — keep tokens, timezone, fetch interval */
+    nvs_erase_key(h, "ssid");
+    nvs_erase_key(h, "password");
     nvs_commit(h);
     nvs_close(h);
-    ESP_LOGI(TAG, "Credentials erased");
+    ESP_LOGI(TAG, "WiFi credentials erased (tokens preserved)");
     return ESP_OK;
 }
 

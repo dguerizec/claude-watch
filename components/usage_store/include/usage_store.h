@@ -33,9 +33,10 @@ esp_err_t usage_store_append(float five_hour, float seven_day);
  * @param to         End of time range (epoch)
  * @param buf        Output buffer for data points
  * @param max_points Maximum number of points to read
+ * @param stride     Keep every Nth matching point (1 = all, 8 = every 8th)
  * @return Number of points read, or 0 on error
  */
-int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points);
+int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points, int stride);
 
 #ifdef __cplusplus
 }
