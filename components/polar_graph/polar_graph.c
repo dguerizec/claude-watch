@@ -67,8 +67,13 @@ static inline void polar_xy(float angle, float r, int *x, int *y)
 
 void polar_graph_draw(esp_lcd_panel_handle_t panel,
                       const usage_data_point_t *points, int num_points,
-                      time_t period_start, time_t now)
+                      time_t period_end, time_t now)
 {
+    /* Angles are relative to period_end (north = reset).
+     * A timestamp maps to: angle = 2π * (t - period_end) / 7days
+     * This wraps naturally: period_end itself → 0 (north),
+     * period_end - 7days → -2π → also north (full circle). */
+
     /* Pre-compute screen coordinates for all data points */
     int *scr_x = NULL, *scr_y = NULL;
     if (num_points > 0) {
@@ -80,9 +85,9 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             return;
         }
         for (int i = 0; i < num_points; i++) {
-            float frac = (float)(points[i].timestamp - period_start) / PERIOD_S;
-            if (frac < 0.0f) frac = 0.0f;
-            if (frac > 1.0f) frac = 1.0f;
+            float frac = (float)(points[i].timestamp - period_end) / PERIOD_S;
+            frac = fmodf(frac, 1.0f);
+            if (frac < 0.0f) frac += 1.0f;
             float angle = 2.0f * M_PI * frac;
             float r = (points[i].value / 100.0f) * MAX_R;
             if (r < 0) r = 0;
@@ -92,9 +97,9 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     }
 
     /* Pre-compute "now" hand endpoint */
-    float now_frac = (float)(now - period_start) / PERIOD_S;
-    if (now_frac < 0.0f) now_frac = 0.0f;
-    if (now_frac > 1.0f) now_frac = 1.0f;
+    float now_frac = (float)(now - period_end) / PERIOD_S;
+    now_frac = fmodf(now_frac, 1.0f);
+    if (now_frac < 0.0f) now_frac += 1.0f;
     float now_angle = 2.0f * M_PI * now_frac;
     int now_x, now_y;
     polar_xy(now_angle, MAX_R, &now_x, &now_y);

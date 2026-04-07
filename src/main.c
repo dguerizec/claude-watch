@@ -285,9 +285,9 @@ static void draw_no_token_screen(void)
 
 static void draw_graph_screen(api_usage_t *usage)
 {
-    time_t period_end = usage->seven_day.resets_at_epoch;
-    time_t period_start = period_end - 7 * 24 * 3600;
     time_t now = time(NULL);
+    time_t period_start = now - 7 * 24 * 3600;
+    time_t period_end = usage->seven_day.resets_at_epoch;
 
     usage_data_point_t *points = malloc(MAX_GRAPH_POINTS * sizeof(usage_data_point_t));
     if (!points) {
@@ -296,7 +296,7 @@ static void draw_graph_screen(api_usage_t *usage)
     }
 
     int n = usage_store_read(period_start, now, points, MAX_GRAPH_POINTS);
-    polar_graph_draw(s_panel, points, n, period_start, now);
+    polar_graph_draw(s_panel, points, n, period_end, now);
     free(points);
 
     /* Overlay current value at center (center = 0% so no data overlap) */
