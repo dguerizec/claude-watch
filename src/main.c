@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_sntp.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_lcd_panel_io.h"
@@ -72,6 +75,28 @@ static void fill_screen(esp_lcd_panel_handle_t panel, uint16_t color)
     free(line_buf);
 }
 
+/* SNTP time sync — called once when WiFi connects */
+static void init_time_sync(void)
+{
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+
+    /* Apply timezone from NVS, default to Europe/Paris */
+    wifi_mgr_credentials_t creds;
+    wifi_mgr_get_credentials(&creds);
+    const char *tz = strlen(creds.timezone) > 0 ? creds.timezone : "CET-1CEST,M3.5.0,M10.5.0/3";
+    setenv("TZ", tz, 1);
+    tzset();
+    ESP_LOGI(TAG, "Timezone: %s", tz);
+
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_set_sync_interval(15 * 60 * 1000);  /* resync every 15 min */
+    esp_sntp_init();
+    ESP_LOGI(TAG, "SNTP initialized — resync every 15 min");
+}
+
 /* WiFi state change callback — updates the display */
 static void wifi_state_cb(wifi_mgr_state_t state, void *arg)
 {
@@ -95,6 +120,7 @@ static void wifi_state_cb(wifi_mgr_state_t state, void *arg)
         break;
 
     case WIFI_MGR_STATE_CONNECTED: {
+        init_time_sync();
         char url[40];
         snprintf(url, sizeof(url), "http://%s", wifi_mgr_get_sta_ip());
         fill_screen(panel, COLOR_DKGREEN);

@@ -1,5 +1,7 @@
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
 #include "api_client.h"
 #include "wifi_manager.h"
 #include "esp_http_client.h"
@@ -14,21 +16,39 @@ static const char *TAG = "api_client";
 #define CLIENT_ID "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 #define MAX_RESPONSE_SIZE 2048
 
-/* Parse "2026-04-07T04:00:00.623562+00:00" into "04:00 UTC" or "Apr 10 12:00" */
+/* Parse "2026-04-07T04:00:00.623562+00:00" into local time "Apr 7 06:00" */
 static void parse_reset_time(const char *iso, char *out, size_t out_size)
 {
-    int year, month, day, hour, minute;
-    if (sscanf(iso, "%d-%d-%dT%d:%d:", &year, &month, &day, &hour, &minute) == 5) {
+    int year, month, day, hour, minute, second;
+    if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) >= 5) {
+        struct tm utc = {
+            .tm_year = year - 1900,
+            .tm_mon = month - 1,
+            .tm_mday = day,
+            .tm_hour = hour,
+            .tm_min = minute,
+            .tm_sec = second,
+        };
+        /* mktime_utc: temporarily set TZ to UTC for mktime */
+        char *old_tz = getenv("TZ");
+        char saved_tz[72] = {0};
+        if (old_tz) strncpy(saved_tz, old_tz, sizeof(saved_tz) - 1);
+        setenv("TZ", "UTC0", 1);
+        tzset();
+        time_t t = mktime(&utc);
+        if (old_tz) setenv("TZ", saved_tz, 1);
+        else unsetenv("TZ");
+        tzset();
+        struct tm local;
+        localtime_r(&t, &local);
+
         static const char *months[] = {
-            "", "Jan","Feb","Mar","Apr","May","Jun",
+            "Jan","Feb","Mar","Apr","May","Jun",
             "Jul","Aug","Sep","Oct","Nov","Dec"
         };
-        if (month >= 1 && month <= 12) {
-            snprintf(out, out_size, "%s %d %02d:%02d",
-                     months[month], day, hour, minute);
-        } else {
-            snprintf(out, out_size, "%02d:%02d", hour, minute);
-        }
+        snprintf(out, out_size, "%s %d %02d:%02d",
+                 months[local.tm_mon], local.tm_mday,
+                 local.tm_hour, local.tm_min);
     } else {
         strncpy(out, iso, out_size - 1);
         out[out_size - 1] = '\0';

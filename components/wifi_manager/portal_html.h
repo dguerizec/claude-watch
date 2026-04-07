@@ -1,3 +1,4 @@
+/* Auto-generated from portal.html — do not edit */
 static const char portal_html[] =
     "<!DOCTYPE html>\n"
     "<html><head>\n"
@@ -27,6 +28,22 @@ static const char portal_html[] =
     "\n"
     "<label for=\"password\">WiFi Password</label>\n"
     "<input type=\"password\" name=\"password\" id=\"password\" placeholder=\"Leave empty for open networks\">\n"
+    "\n"
+    "<label for=\"tz\">Timezone</label>\n"
+    "<select name=\"timezone\" id=\"tz\">\n"
+    "<option value=\"CET-1CEST,M3.5.0,M10.5.0/3\">Europe/Paris</option>\n"
+    "<option value=\"GMT0BST,M3.5.0/1,M10.5.0\">Europe/London</option>\n"
+    "<option value=\"EET-2EEST,M3.5.0/3,M10.5.0/4\">Europe/Helsinki</option>\n"
+    "<option value=\"EST5EDT,M3.2.0,M11.1.0\">US/Eastern</option>\n"
+    "<option value=\"CST6CDT,M3.2.0,M11.1.0\">US/Central</option>\n"
+    "<option value=\"MST7MDT,M3.2.0,M11.1.0\">US/Mountain</option>\n"
+    "<option value=\"PST8PDT,M3.2.0,M11.1.0\">US/Pacific</option>\n"
+    "<option value=\"JST-9\">Asia/Tokyo</option>\n"
+    "<option value=\"CST-8\">Asia/Shanghai</option>\n"
+    "<option value=\"IST-5:30\">Asia/Kolkata</option>\n"
+    "<option value=\"AEST-10AEDT,M10.1.0,M4.1.0/3\">Australia/Sydney</option>\n"
+    "<option value=\"UTC0\">UTC</option>\n"
+    "</select>\n"
     "\n"
     "<label for=\"refresh_tk\">Refresh Token</label>\n"
     "<p class=\"hint\">Run this in a terminal, then paste the result:</p>\n"
@@ -76,5 +93,5 @@ static const char portal_html[] =
     "  document.body.innerHTML='<div style=\"text-align:center;padding:60px 20px\"><h2>Connecting...</h2><p>Sending configuration...</p></div>';\n"
     "};\n"
     "</script>\n"
-    "</body></html>\n";
-
+    "</body></html>\n"
+;

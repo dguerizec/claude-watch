@@ -219,13 +219,13 @@ static esp_err_t http_post_connect(httpd_req_t *req)
 
     char ssid[33] = {0};
     char password[65] = {0};
-    char access_tk[256] = {0};
     char refresh_tk[256] = {0};
+    char timezone[64] = {0};
 
     parse_form_field(buf, "ssid", ssid, sizeof(ssid));
     parse_form_field(buf, "password", password, sizeof(password));
-    parse_form_field(buf, "access_tk", access_tk, sizeof(access_tk));
     parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
+    parse_form_field(buf, "timezone", timezone, sizeof(timezone));
 
     if (strlen(ssid) == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required");
@@ -235,8 +235,8 @@ static esp_err_t http_post_connect(httpd_req_t *req)
     ESP_LOGI(TAG, "Saving credentials: SSID='%s'", ssid);
     nvs_write_str("ssid", ssid);
     nvs_write_str("password", password);
-    nvs_write_str("access_tk", access_tk);
-    nvs_write_str("refresh_tk", refresh_tk);
+    if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
+    if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
 
     /* Send success response */
     const char *resp = "<!DOCTYPE html><html><head>"
@@ -284,14 +284,14 @@ static esp_err_t http_get_config(httpd_req_t *req)
         strncpy(rt_display, creds->refresh_token, sizeof(rt_display) - 1);
     }
 
-    char *page = malloc(3072);
+    char *page = malloc(4096);
     if (!page) {
         free(creds);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
 
-    int len = snprintf(page, 3072,
+    int len = snprintf(page, 4096,
         "<!DOCTYPE html><html><head>"
         "<meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -301,9 +301,9 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "body{font-family:-apple-system,sans-serif;max-width:400px;margin:0 auto;padding:20px;background:#f5f5f5;color:#333}"
         "h2{margin:0 0 20px;text-align:center}"
         "label{display:block;margin:12px 0 4px;font-weight:600;font-size:14px}"
-        "input,textarea,button{width:100%%;padding:10px;margin:0 0 4px;border:1px solid #ccc;border-radius:6px;font-size:14px;font-family:monospace}"
-        "textarea{height:60px;resize:vertical}"
-        "button{background:#2563eb;color:#fff;border:none;font-weight:600;cursor:pointer;margin-top:16px;font-family:sans-serif}"
+        "input,textarea,select,button{width:100%%;padding:10px;margin:0 0 4px;border:1px solid #ccc;border-radius:6px;font-size:14px}"
+        "textarea{height:60px;resize:vertical;font-family:monospace}"
+        "button{background:#2563eb;color:#fff;border:none;font-weight:600;cursor:pointer;margin-top:16px}"
         ".info{background:#e0e7ff;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}"
         ".ok{background:#d1fae5;color:#065f46;padding:12px;border-radius:6px;text-align:center;display:none}"
         ".hint{font-size:12px;color:#888;margin:2px 0 0}"
@@ -314,6 +314,21 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<div class=\"info\">WiFi: <b>%s</b><br>IP: %s</div>"
         "<div class=\"ok\" id=\"ok\">Saved!</div>"
         "<form id=\"f\">"
+        "<label>Timezone</label>"
+        "<select name=\"timezone\" id=\"tz\">"
+        "<option value=\"CET-1CEST,M3.5.0,M10.5.0/3\">Europe/Paris</option>"
+        "<option value=\"GMT0BST,M3.5.0/1,M10.5.0\">Europe/London</option>"
+        "<option value=\"EET-2EEST,M3.5.0/3,M10.5.0/4\">Europe/Helsinki</option>"
+        "<option value=\"EST5EDT,M3.2.0,M11.1.0\">US/Eastern</option>"
+        "<option value=\"CST6CDT,M3.2.0,M11.1.0\">US/Central</option>"
+        "<option value=\"MST7MDT,M3.2.0,M11.1.0\">US/Mountain</option>"
+        "<option value=\"PST8PDT,M3.2.0,M11.1.0\">US/Pacific</option>"
+        "<option value=\"JST-9\">Asia/Tokyo</option>"
+        "<option value=\"CST-8\">Asia/Shanghai</option>"
+        "<option value=\"IST-5:30\">Asia/Kolkata</option>"
+        "<option value=\"AEST-10AEDT,M10.1.0,M4.1.0/3\">Australia/Sydney</option>"
+        "<option value=\"UTC0\">UTC</option>"
+        "</select>"
         "<label>Refresh Token</label>"
         "<p class=\"hint\">Run this in a terminal, then paste the result:</p>"
         "<div class=\"cmd\" onclick=\"navigator.clipboard.writeText(this.textContent)\">jq -r '.claudeAiOauth.refreshToken' ~/.claude/.credentials.json</div>"
@@ -322,14 +337,16 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<button type=\"submit\">Save</button>"
         "</form>"
         "<script>"
+        "document.getElementById('tz').value='%s'||'CET-1CEST,M3.5.0,M10.5.0/3';"
         "document.getElementById('f').onsubmit=function(e){"
         "e.preventDefault();"
-        "var b='refresh_tk='+encodeURIComponent(document.getElementById('rt').value);"
+        "var b='timezone='+encodeURIComponent(document.getElementById('tz').value)"
+        "+'&refresh_tk='+encodeURIComponent(document.getElementById('rt').value);"
         "fetch('/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
         ".then(function(){var o=document.getElementById('ok');o.style.display='block';setTimeout(function(){o.style.display='none'},2000)})"
         "};"
         "</script></body></html>",
-        creds->ssid, s_sta_ip, rt_display);
+        creds->ssid, s_sta_ip, rt_display, creds->timezone);
 
     free(creds);
     httpd_resp_set_type(req, "text/html");
@@ -353,16 +370,16 @@ static esp_err_t http_post_config(httpd_req_t *req)
     }
     buf[received] = '\0';
 
-    char access_tk[256] = {0};
     char refresh_tk[256] = {0};
-    parse_form_field(buf, "access_tk", access_tk, sizeof(access_tk));
+    char timezone[64] = {0};
     parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
+    parse_form_field(buf, "timezone", timezone, sizeof(timezone));
     free(buf);
 
     /* Only update non-empty fields */
-    if (strlen(access_tk) > 0) nvs_write_str("access_tk", access_tk);
     if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
-    ESP_LOGI(TAG, "Tokens updated");
+    if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
+    ESP_LOGI(TAG, "Config updated");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -590,6 +607,7 @@ esp_err_t wifi_mgr_get_credentials(wifi_mgr_credentials_t *creds)
     nvs_read_str("password", creds->password, sizeof(creds->password));
     nvs_read_str("access_tk", creds->access_token, sizeof(creds->access_token));
     nvs_read_str("refresh_tk", creds->refresh_token, sizeof(creds->refresh_token));
+    nvs_read_str("timezone", creds->timezone, sizeof(creds->timezone));
     return ESP_OK;
 }
 

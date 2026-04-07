@@ -19,6 +19,7 @@ typedef struct {
     char password[65];
     char access_token[256];
     char refresh_token[256];
+    char timezone[64];
 } wifi_mgr_credentials_t;
 
 /**
