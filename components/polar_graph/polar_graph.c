@@ -63,6 +63,34 @@ static inline void polar_xy(float angle, float r, int *x, int *y)
     *y = CY - (int)(r * cosf(angle));
 }
 
+/* Draw an arc between two polar points, interpolating in polar space.
+ * For small angular distances, this degenerates to a single sline. */
+static void polar_arc(uint16_t *strip, int sy, int sh,
+                      float a0, float r0, float a1, float r1, uint16_t c)
+{
+    float da = a1 - a0;
+    /* Shortest path around the circle */
+    if (da > M_PI) da -= 2.0f * M_PI;
+    if (da < -M_PI) da += 2.0f * M_PI;
+
+    /* ~3 pixels per sub-segment at the outer radius */
+    int steps = (int)(fabsf(da) * MAX_R / 3.0f) + 1;
+    if (steps > 120) steps = 120;
+
+    int px = CX + (int)(r0 * sinf(a0));
+    int py = CY - (int)(r0 * cosf(a0));
+    for (int s = 1; s <= steps; s++) {
+        float t = (float)s / steps;
+        float a = a0 + da * t;
+        float r = r0 + (r1 - r0) * t;
+        int nx = CX + (int)(r * sinf(a));
+        int ny = CY - (int)(r * cosf(a));
+        sline(strip, sy, sh, px, py, nx, ny, c);
+        px = nx;
+        py = ny;
+    }
+}
+
 /* Compute burn rate (0–100) for a timestamp within its billing period */
 static inline float burn_rate_at(time_t ts, time_t week_start, int psecs)
 {
@@ -98,16 +126,20 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     if (num_rotations > MAX_ROTATIONS) num_rotations = MAX_ROTATIONS;
 
     int16_t *scr_x = NULL, *scr_y = NULL;
+    float *pt_angle = NULL, *pt_radius = NULL;
     uint8_t *pt_week = NULL;
     uint16_t *pt_color = NULL;
 
     if (num_points > 0) {
         scr_x = malloc(num_points * sizeof(int16_t));
         scr_y = malloc(num_points * sizeof(int16_t));
+        pt_angle = malloc(num_points * sizeof(float));
+        pt_radius = malloc(num_points * sizeof(float));
         pt_week = malloc(num_points);
         pt_color = malloc(num_points * sizeof(uint16_t));
-        if (!scr_x || !scr_y || !pt_week || !pt_color) {
-            free(scr_x); free(scr_y); free(pt_week); free(pt_color);
+        if (!scr_x || !scr_y || !pt_angle || !pt_radius || !pt_week || !pt_color) {
+            free(scr_x); free(scr_y); free(pt_angle); free(pt_radius);
+            free(pt_week); free(pt_color);
             ESP_LOGE(TAG, "Failed to alloc point arrays");
             return;
         }
@@ -120,6 +152,8 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             float r = MIN_R + (points[i].value / 100.0f) * (MAX_R - MIN_R);
             if (r < MIN_R) r = MIN_R;
             if (r > MAX_R) r = MAX_R;
+            pt_angle[i] = angle;
+            pt_radius[i] = r;
             int sx, sy;
             polar_xy(angle, r, &sx, &sy);
             scr_x[i] = sx;
@@ -211,15 +245,19 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
         }
 
         /* Data polyline — oldest week first, newest last (z-order).
-         * Skip segment if value decreases (= billing period reset). */
+         * Skip segment if value decreases (= billing period reset).
+         * Use polar_arc to interpolate along the circle instead of
+         * straight Bresenham lines that cut chords. */
         for (int w = num_rotations - 1; w >= 0; w--) {
             for (int i = 0; i < num_points - 1; i++) {
                 if (pt_week[i] != w || pt_week[i + 1] != w) continue;
                 if (points[i].value > points[i + 1].value) continue;
-                int ymin = scr_y[i] < scr_y[i+1] ? scr_y[i] : scr_y[i+1];
-                int ymax = scr_y[i] > scr_y[i+1] ? scr_y[i] : scr_y[i+1];
-                if (ymax < sy || ymin >= sy + sh) continue;
-                sline(strip, sy, sh, scr_x[i], scr_y[i], scr_x[i+1], scr_y[i+1], pt_color[i + 1]);
+                /* Coarse Y cull using max possible radius */
+                float rmax = pt_radius[i] > pt_radius[i+1] ? pt_radius[i] : pt_radius[i+1];
+                if (CY - (int)rmax > sy + sh || CY + (int)rmax < sy) continue;
+                polar_arc(strip, sy, sh,
+                          pt_angle[i], pt_radius[i],
+                          pt_angle[i+1], pt_radius[i+1], pt_color[i + 1]);
             }
         }
 
@@ -241,6 +279,8 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     free(buf[1]);
     free(scr_x);
     free(scr_y);
+    free(pt_angle);
+    free(pt_radius);
     free(pt_week);
     free(pt_color);
     ESP_LOGI(TAG, "Graph drawn: %d points, %d weeks", num_points, num_rotations);

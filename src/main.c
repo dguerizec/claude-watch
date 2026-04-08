@@ -323,6 +323,8 @@ static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotat
                                usage_column_t col)
 {
     time_t now = time(NULL);
+    /* If no fetch yet, use now as reset reference — graph still shows SD history */
+    if (reset_epoch == 0) reset_epoch = now;
     time_t data_start = now - num_rotations * (time_t)period_secs;
 
     usage_data_point_t *points = malloc(MAX_GRAPH_POINTS * sizeof(usage_data_point_t));
@@ -346,7 +348,10 @@ static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotat
 
     /* Overlay current value at center */
     char pct[16];
-    snprintf(pct, sizeof(pct), "%.0f%%", current_pct);
+    if (current_pct >= 0)
+        snprintf(pct, sizeof(pct), "%.0f%%", current_pct);
+    else
+        strcpy(pct, "--");
     display_text_draw_string_centered(s_panel, 113, pct, 0xFFFF, 0x0000, 2);
 }
 
@@ -596,7 +601,6 @@ static void display_task(void *arg)
             break;
 
         case DISP_MSG_TOGGLE:
-            if (!s_has_usage) break;
             s_settings_overlay = false;
             load_display_config();  /* pick up any web UI changes */
             s_view_idx = (s_view_idx + 1) % s_view_cycle_len;
