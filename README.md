@@ -6,6 +6,16 @@ Built with a [Seeed Studio XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp3
 
 ## Hardware
 
+### BOM
+
+| Part | Link |
+|------|------|
+| Seeed XIAO ESP32-S3 | [seeedstudio.com](https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html) |
+| 1.28" Round Touch Display | [seeedstudio.com](https://www.seeedstudio.com/1-28-Round-Touch-Display-for-Seeed-Studio-XIAO-ESP32.html) |
+| microSD card (any size) | — |
+
+### Specs
+
 - **MCU**: Seeed XIAO ESP32-S3 (dual-core 240MHz, 320KB SRAM, 8MB flash)
 - **Display**: 1.28" round GC9A01 LCD, 240x240 RGB565
 - **Touch**: CHSC6X capacitive touch controller (I2C)
