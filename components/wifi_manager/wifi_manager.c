@@ -8,8 +8,14 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_http_server.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "dns_server.h"
+#include "esp_random.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/base64.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
@@ -18,6 +24,12 @@ static const char *TAG = "wifi_mgr";
 
 #define NVS_NAMESPACE   "wifi_mgr"
 #define MAX_STA_RETRIES 5
+#define OAUTH_CLIENT_ID       "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+#define OAUTH_AUTH_URL        "https://claude.ai/oauth/authorize"
+#define OAUTH_TOKEN_URL       "https://console.anthropic.com/v1/oauth/token"
+#define OAUTH_REDIRECT        "https://console.anthropic.com/oauth/code/callback"
+#define OAUTH_REDIRECT_ENC    "https%%3A%%2F%%2Fconsole.anthropic.com%%2Foauth%%2Fcode%%2Fcallback"
+#define OAUTH_SCOPE_ENC       "org%%3Acreate_api_key+user%%3Aprofile+user%%3Ainference"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -75,6 +87,37 @@ static bool has_stored_credentials(void)
 {
     char ssid[33];
     return nvs_read_str("ssid", ssid, sizeof(ssid)) == ESP_OK && strlen(ssid) > 0;
+}
+
+/* ---------- OAuth PKCE ---------- */
+
+static char s_pkce_verifier[64];   /* also used as OAuth state */
+static char s_pkce_challenge[64];
+
+static void base64url_encode(const uint8_t *in, size_t in_len, char *out, size_t out_size)
+{
+    size_t olen;
+    mbedtls_base64_encode((uint8_t *)out, out_size, &olen, in, in_len);
+    /* base64 → base64url */
+    for (size_t i = 0; i < olen; i++) {
+        if (out[i] == '+') out[i] = '-';
+        else if (out[i] == '/') out[i] = '_';
+    }
+    while (olen > 0 && out[olen - 1] == '=') olen--;
+    out[olen] = '\0';
+}
+
+static void generate_pkce(void)
+{
+    uint8_t rand_bytes[32];
+    esp_fill_random(rand_bytes, sizeof(rand_bytes));
+    base64url_encode(rand_bytes, sizeof(rand_bytes), s_pkce_verifier, sizeof(s_pkce_verifier));
+
+    uint8_t hash[32];
+    mbedtls_sha256((const uint8_t *)s_pkce_verifier, strlen(s_pkce_verifier), hash, 0);
+    base64url_encode(hash, sizeof(hash), s_pkce_challenge, sizeof(s_pkce_challenge));
+
+    ESP_LOGI(TAG, "PKCE generated (verifier=%d chars, state=verifier)", (int)strlen(s_pkce_verifier));
 }
 
 /* ---------- URL-decode helper ---------- */
@@ -279,6 +322,9 @@ static esp_err_t http_get_config(httpd_req_t *req)
     }
     wifi_mgr_get_credentials(creds);
 
+    /* Generate fresh PKCE for OAuth link */
+    generate_pkce();
+
     /* Mask token for display: show first 20 chars + "..." */
     char rt_display[28] = {0};
     if (strlen(creds->refresh_token) > 20) {
@@ -287,14 +333,14 @@ static esp_err_t http_get_config(httpd_req_t *req)
         strncpy(rt_display, creds->refresh_token, sizeof(rt_display) - 1);
     }
 
-    char *page = malloc(4096);
+    char *page = malloc(5120);
     if (!page) {
         free(creds);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
 
-    int len = snprintf(page, 4096,
+    int len = snprintf(page, 5120,
         "<!DOCTYPE html><html><head>"
         "<meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -345,13 +391,18 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<option value=\"15\">15 min</option>"
         "<option value=\"30\">30 min</option>"
         "</select>"
-        "<label>Refresh Token</label>"
-        "<p class=\"hint\">Run this in a terminal, then paste the result:</p>"
-        "<div class=\"cmd\" onclick=\"navigator.clipboard.writeText(this.textContent)\">jq -r '.claudeAiOauth.refreshToken' ~/.claude/.credentials.json</div>"
-        "<textarea name=\"refresh_tk\" id=\"rt\" placeholder=\"Paste refresh token here\"></textarea>"
-        "<p class=\"hint\">Current: %s</p>"
         "<button type=\"submit\">Save</button>"
         "</form>"
+        "<h3 style=\"margin-top:24px\">Anthropic Account</h3>"
+        "<p class=\"hint\">Token: %s</p>"
+        "<p>1. <a href=\"%s?code=true&client_id=%s&response_type=code"
+        "&redirect_uri=" OAUTH_REDIRECT_ENC "&scope=" OAUTH_SCOPE_ENC
+        "&code_challenge=%s&code_challenge_method=S256&state=%s\" target=\"_blank\" rel=\"noreferrer noopener\" id=\"al\">"
+        "Login with Anthropic</a></p>"
+"<p class=\"hint\"><a href=\"#\" id=\"cp\">Copy auth URL to clipboard</a></p>"
+        "<p>2. Paste the code here:</p>"
+        "<input id=\"oc\" placeholder=\"Paste authorization code\">"
+        "<button id=\"ox\">Authorize</button>"
         "<button id=\"rst\" style=\"background:#dc2626;margin-top:16px;width:100%%\">Reset WiFi &amp; Reboot</button>"
         "<script>"
         "document.getElementById('tz').value='%s'||'CET-1CEST,M3.5.0,M10.5.0/3';"
@@ -361,17 +412,33 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "var b='ssid='+encodeURIComponent(document.getElementById('ss').value)"
         "+'&password='+encodeURIComponent(document.getElementById('pw').value)"
         "+'&timezone='+encodeURIComponent(document.getElementById('tz').value)"
-        "+'&fetch_int='+encodeURIComponent(document.getElementById('fi').value)"
-        "+'&refresh_tk='+encodeURIComponent(document.getElementById('rt').value);"
+        "+'&fetch_int='+encodeURIComponent(document.getElementById('fi').value);"
         "fetch('/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
         ".then(function(){var o=document.getElementById('ok');o.style.display='block';setTimeout(function(){o.style.display='none'},2000)})"
         "};"
+        "document.getElementById('ox').onclick=function(){"
+        "var c=document.getElementById('oc').value.trim();"
+        "if(!c){alert('Paste the code first');return;}"
+        "fetch('/oauth/exchange',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'code='+encodeURIComponent(c)})"
+        ".then(function(r){return r.json()})"
+        ".then(function(d){if(d.ok){var o=document.getElementById('ok');o.textContent='Authorized!';o.style.display='block';"
+        "setTimeout(function(){o.style.display='none';o.textContent='Saved!'},3000)}"
+        "else alert('Authorization failed')})"
+        ".catch(function(){alert('Authorization failed')})"
+        "};"
+        "document.getElementById('cp').onclick=function(e){"
+        "e.preventDefault();navigator.clipboard.writeText(document.getElementById('al').href)"
+        ".then(function(){e.target.textContent='Copied!'})};"
         "document.getElementById('rst').onclick=function(){"
         "if(confirm('Reset WiFi and reboot?'))"
         "fetch('/wifi-reset',{method:'POST'}).then(function(){document.body.innerHTML='<h2>Rebooting...</h2>'})"
         "};"
         "</script></body></html>",
-        creds->ssid, s_sta_ip, rt_display, creds->timezone, creds->fetch_interval);
+        creds->ssid, s_sta_ip,
+        rt_display,
+        OAUTH_AUTH_URL, OAUTH_CLIENT_ID,
+        s_pkce_challenge, s_pkce_verifier,
+        creds->timezone, creds->fetch_interval);
 
     free(creds);
     httpd_resp_set_type(req, "text/html");
@@ -434,6 +501,127 @@ static esp_err_t http_post_wifi_reset(httpd_req_t *req)
     return ESP_OK;  /* unreachable */
 }
 
+static esp_err_t http_post_oauth_exchange(httpd_req_t *req)
+{
+    char *buf = malloc(512);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    int received = httpd_req_recv(req, buf, 511);
+    if (received <= 0) { free(buf); return ESP_FAIL; }
+    buf[received] = '\0';
+
+    char code[256] = {0};
+    parse_form_field(buf, "code", code, sizeof(code));
+    free(buf);
+
+    if (strlen(code) == 0 || strlen(s_pkce_verifier) == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing code or PKCE expired");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OAuth code exchange...");
+
+    /* Split code on '#' → pure_code + state (state is after '#') */
+    char *hash = strchr(code, '#');
+    char *state = "";
+    if (hash) {
+        *hash = '\0';
+        state = hash + 1;
+    }
+
+    /* Build JSON body for token endpoint */
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "grant_type", "authorization_code");
+    cJSON_AddStringToObject(body, "code", code);
+    cJSON_AddStringToObject(body, "state", state);
+    cJSON_AddStringToObject(body, "client_id", OAUTH_CLIENT_ID);
+    cJSON_AddStringToObject(body, "code_verifier", s_pkce_verifier);
+    cJSON_AddStringToObject(body, "redirect_uri", OAUTH_REDIRECT);
+    char *post_data = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    if (!post_data) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Token request: %s", post_data);
+
+    /* POST to token endpoint */
+    esp_http_client_config_t config = {
+        .url = OAUTH_TOKEN_URL,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 10000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+
+    esp_err_t err = esp_http_client_open(client, strlen(post_data));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OAuth token request failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        free(post_data);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Token request failed");
+        return ESP_FAIL;
+    }
+    esp_http_client_write(client, post_data, strlen(post_data));
+    free(post_data);
+
+    esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+
+    char *resp = malloc(2048);
+    if (!resp) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    int total = 0, len;
+    while (total < 2047) {
+        len = esp_http_client_read(client, resp + total, 2047 - total);
+        if (len <= 0) break;
+        total += len;
+    }
+    resp[total] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (status != 200) {
+        ESP_LOGE(TAG, "OAuth token error HTTP %d: %s", status, resp);
+        free(resp);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Token exchange failed");
+        return ESP_FAIL;
+    }
+
+    /* Parse tokens from response */
+    cJSON *root = cJSON_Parse(resp);
+    free(resp);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON parse error");
+        return ESP_FAIL;
+    }
+
+    cJSON *at = cJSON_GetObjectItem(root, "access_token");
+    cJSON *rt = cJSON_GetObjectItem(root, "refresh_token");
+
+    if (at && cJSON_IsString(at))
+        nvs_write_str("access_tk", cJSON_GetStringValue(at));
+    if (rt && cJSON_IsString(rt))
+        nvs_write_str("refresh_tk", cJSON_GetStringValue(rt));
+
+    cJSON_Delete(root);
+
+    /* Invalidate PKCE verifier — single use */
+    s_pkce_verifier[0] = '\0';
+
+    ESP_LOGI(TAG, "OAuth tokens saved successfully");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 /* ---------- HTTP server ---------- */
 
 static void start_http_server_provisioning(void)
@@ -464,6 +652,7 @@ static void start_http_server_station(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
+    config.stack_size = 16384;  /* OAuth exchange needs TLS → big stack */
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -473,10 +662,12 @@ static void start_http_server_station(void)
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = http_get_config };
     httpd_uri_t cfg = { .uri = "/config", .method = HTTP_POST, .handler = http_post_config };
     httpd_uri_t rst = { .uri = "/wifi-reset", .method = HTTP_POST, .handler = http_post_wifi_reset };
+    httpd_uri_t oex = { .uri = "/oauth/exchange", .method = HTTP_POST, .handler = http_post_oauth_exchange };
 
     httpd_register_uri_handler(s_httpd, &root);
     httpd_register_uri_handler(s_httpd, &cfg);
     httpd_register_uri_handler(s_httpd, &rst);
+    httpd_register_uri_handler(s_httpd, &oex);
 
     ESP_LOGI(TAG, "HTTP server started (station)");
 }

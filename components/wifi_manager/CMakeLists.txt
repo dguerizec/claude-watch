@@ -8,7 +8,7 @@ execute_process(
 idf_component_register(
     SRCS "wifi_manager.c"
     INCLUDE_DIRS "include"
-    REQUIRES esp_wifi esp_netif esp_event esp_http_server nvs_flash dns_server log
+    REQUIRES esp_wifi esp_netif esp_event esp_http_server esp_http_client nvs_flash dns_server log mbedtls json
 )
 
 # Force CMake reconfigure when portal.html changes
