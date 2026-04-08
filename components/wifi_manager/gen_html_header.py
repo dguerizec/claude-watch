@@ -2,14 +2,16 @@
 """Convert an HTML file into a C string header."""
 import sys
 
-src, dst = sys.argv[1], sys.argv[2]
+src = sys.argv[1]
+dst = sys.argv[2]
+varname = sys.argv[3] if len(sys.argv) > 3 else "portal_html"
 
 with open(src) as f:
     lines = f.read().split("\n")
 
 with open(dst, "w") as f:
-    f.write("/* Auto-generated from portal.html — do not edit */\n")
-    f.write("static const char portal_html[] =\n")
+    f.write(f"/* Auto-generated — do not edit */\n")
+    f.write(f"static const char {varname}[] =\n")
     for i, line in enumerate(lines):
         escaped = line.replace("\\", "\\\\").replace('"', '\\"')
         last = i == len(lines) - 1 and not escaped

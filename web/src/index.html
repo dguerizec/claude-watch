@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Watch</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;max-width:480px;margin:0 auto;padding:16px}
+h2{text-align:center;margin-bottom:12px;font-size:20px}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #1e293b}
+.tab{flex:1;padding:10px;text-align:center;cursor:pointer;border-radius:6px 6px 0 0;background:#1e293b;color:#94a3b8;font-size:14px;font-weight:600;transition:all .2s}
+.tab.active{background:#2563eb;color:#fff}
+.panel{display:none}
+.panel.active{display:block}
+
+/* Toast */
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:6px;font-weight:600;display:none;z-index:99}
+.toast.ok{background:#d1fae5;color:#065f46}
+.toast.error{background:#fee2e2;color:#b91c1c}
+
+/* Forms */
+label{display:block;margin:12px 0 4px;font-weight:600;font-size:13px;color:#94a3b8}
+select,input,textarea{width:100%;padding:10px;border:1px solid #334155;border-radius:6px;font-size:14px;background:#1e293b;color:#e2e8f0}
+select:focus,input:focus{outline:none;border-color:#2563eb}
+button,.btn{display:block;width:100%;padding:10px;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;margin-top:12px;transition:background .2s}
+.btn-primary{background:#2563eb;color:#fff}
+.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff}
+.btn-danger:hover{background:#b91c1c}
+.btn-secondary{background:#334155;color:#e2e8f0}
+
+/* Info bar */
+.info{background:#1e293b;padding:10px;border-radius:6px;font-size:13px;color:#94a3b8;margin-bottom:12px}
+
+/* Account */
+.auth-steps{font-size:14px;line-height:1.8}
+.auth-steps a{color:#60a5fa}
+.copy-link{font-size:12px;color:#64748b;cursor:pointer;margin-left:8px}
+
+/* Display config */
+.screen-row{display:flex;align-items:center;justify-content:space-between;padding:10px;background:#1e293b;border-radius:6px;margin-bottom:6px}
+.screen-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px}
+.screen-toggle input{width:auto;margin:0}
+.screen-arrows{display:flex;gap:4px}
+.arr{width:32px;height:32px;border:1px solid #334155;border-radius:4px;background:#0f172a;color:#94a3b8;cursor:pointer;font-size:12px;padding:0}
+.arr:hover:not(:disabled){background:#334155;color:#fff}
+.arr:disabled{opacity:.3;cursor:default}
+
+.hint{font-size:12px;color:#64748b;margin-top:2px}
+</style>
+</head><body>
+
+<h2>Claude Watch</h2>
+<div class="toast" id="toast"></div>
+
+<div class="tabs">
+  <div class="tab active" data-panel="p-settings">Settings</div>
+  <div class="tab" data-panel="p-account">Account</div>
+  <div class="tab" data-panel="p-display">Display</div>
+</div>
+
+<!-- Settings -->
+<div class="panel active" id="p-settings">
+  <div class="info" id="wifi-info">Loading...</div>
+  <form id="settings-form">
+    <label for="ss">WiFi SSID</label>
+    <input id="ss" placeholder="Leave empty to keep current">
+    <label for="pw">WiFi Password</label>
+    <input type="password" id="pw" placeholder="Leave empty to keep current">
+    <label for="tz">Timezone</label>
+    <select id="tz">
+      <option value="CET-1CEST,M3.5.0,M10.5.0/3">Europe/Paris</option>
+      <option value="GMT0BST,M3.5.0/1,M10.5.0">Europe/London</option>
+      <option value="EET-2EEST,M3.5.0/3,M10.5.0/4">Europe/Helsinki</option>
+      <option value="EST5EDT,M3.2.0,M11.1.0">US/Eastern</option>
+      <option value="CST6CDT,M3.2.0,M11.1.0">US/Central</option>
+      <option value="MST7MDT,M3.2.0,M11.1.0">US/Mountain</option>
+      <option value="PST8PDT,M3.2.0,M11.1.0">US/Pacific</option>
+      <option value="JST-9">Asia/Tokyo</option>
+      <option value="CST-8">Asia/Shanghai</option>
+      <option value="IST-5:30">Asia/Kolkata</option>
+      <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Australia/Sydney</option>
+      <option value="UTC0">UTC</option>
+    </select>
+    <label for="fi">Fetch Interval</label>
+    <select id="fi">
+      <option value="1">1 min</option>
+      <option value="2">2 min</option>
+      <option value="5">5 min</option>
+      <option value="10">10 min</option>
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+    </select>
+    <button type="submit" class="btn btn-primary">Save Settings</button>
+  </form>
+  <button class="btn btn-danger" id="btn-wifi-reset">Reset WiFi &amp; Reboot</button>
+</div>
+
+<!-- Account -->
+<div class="panel" id="p-account">
+  <div class="info" id="token-status">Loading...</div>
+  <div class="auth-steps">
+    <p>1. <a href="#" id="auth-link" target="_blank" rel="noreferrer noopener">Login with Anthropic</a>
+       <a href="#" id="copy-auth-url" class="copy-link">Copy URL</a></p>
+    <p>2. Paste the authorization code below:</p>
+  </div>
+  <input id="auth-code" placeholder="Paste authorization code">
+  <button class="btn btn-primary" id="btn-authorize">Authorize</button>
+</div>
+
+<!-- Display -->
+<div class="panel" id="p-display">
+  <p class="hint" style="margin-bottom:12px">Enable/disable screens and set their order. Tap arrows to reorder.</p>
+  <div id="screen-list"></div>
+  <button class="btn btn-primary" id="btn-save-display">Save Display Config</button>
+</div>
+
+<script src="app.js"></script>
+</body></html>

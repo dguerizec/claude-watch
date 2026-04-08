@@ -310,175 +310,135 @@ static esp_err_t http_redirect_handler(httpd_req_t *req)
 
 /* ---------- Station mode: config page ---------- */
 
-static esp_err_t http_get_config(httpd_req_t *req)
+/* ── SPA settings page (built from web/src/) ─────────────────────────── */
+#include "settings_html.h"
+
+static esp_err_t http_get_settings(httpd_req_t *req)
 {
-    wifi_mgr_credentials_t *creds = malloc(sizeof(wifi_mgr_credentials_t));
-    if (!creds) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    wifi_mgr_get_credentials(creds);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, settings_html, sizeof(settings_html) - 1);
+    return ESP_OK;
+}
+
+static esp_err_t http_get_api_config(httpd_req_t *req)
+{
+    wifi_mgr_credentials_t creds;
+    wifi_mgr_get_credentials(&creds);
 
     /* Generate fresh PKCE for OAuth link */
     generate_pkce();
 
-    /* Mask token for display: show first 20 chars + "..." */
-    char rt_display[28] = {0};
-    if (strlen(creds->refresh_token) > 20) {
-        snprintf(rt_display, sizeof(rt_display), "%.20s...", creds->refresh_token);
-    } else if (strlen(creds->refresh_token) > 0) {
-        strncpy(rt_display, creds->refresh_token, sizeof(rt_display) - 1);
-    }
+    /* Mask token for display */
+    char token_status[32] = "not set";
+    if (strlen(creds.refresh_token) > 0)
+        snprintf(token_status, sizeof(token_status), "%.8s...%s",
+                 creds.refresh_token, " (active)");
 
-    char *page = malloc(5120);
-    if (!page) {
-        free(creds);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
+    /* Build OAuth auth URL */
+    char auth_url[512];
+    snprintf(auth_url, sizeof(auth_url),
+        OAUTH_AUTH_URL "?code=true&client_id=" OAUTH_CLIENT_ID
+        "&response_type=code"
+        "&redirect_uri=https%%3A%%2F%%2Fconsole.anthropic.com%%2Foauth%%2Fcode%%2Fcallback"
+        "&scope=org%%3Acreate_api_key+user%%3Aprofile+user%%3Ainference"
+        "&code_challenge=%s&code_challenge_method=S256&state=%s",
+        s_pkce_challenge, s_pkce_verifier);
 
-    int len = snprintf(page, 5120,
-        "<!DOCTYPE html><html><head>"
-        "<meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<title>Claude Monitor</title>"
-        "<style>"
-        "*{box-sizing:border-box}"
-        "body{font-family:-apple-system,sans-serif;max-width:400px;margin:0 auto;padding:20px;background:#f5f5f5;color:#333}"
-        "h2{margin:0 0 20px;text-align:center}"
-        "label{display:block;margin:12px 0 4px;font-weight:600;font-size:14px}"
-        "input,textarea,select,button{width:100%%;padding:10px;margin:0 0 4px;border:1px solid #ccc;border-radius:6px;font-size:14px}"
-        "textarea{height:60px;resize:vertical;font-family:monospace}"
-        "button{background:#2563eb;color:#fff;border:none;font-weight:600;cursor:pointer;margin-top:16px}"
-        ".info{background:#e0e7ff;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}"
-        ".ok{background:#d1fae5;color:#065f46;padding:12px;border-radius:6px;text-align:center;display:none}"
-        ".hint{font-size:12px;color:#888;margin:2px 0 0}"
-        ".cmd{background:#1e293b;color:#e2e8f0;padding:10px;border-radius:6px;font-family:monospace;font-size:12px;word-break:break-all;margin:8px 0;cursor:pointer}"
-        ".cmd:active{background:#334155}"
-        "</style></head><body>"
-        "<h2>Claude Monitor</h2>"
-        "<div class=\"info\">WiFi: <b>%s</b><br>IP: %s</div>"
-        "<div class=\"ok\" id=\"ok\">Saved!</div>"
-        "<form id=\"f\">"
-        "<label>WiFi SSID</label>"
-        "<input name=\"ssid\" id=\"ss\" placeholder=\"Leave empty to keep current\">"
-        "<label>WiFi Password</label>"
-        "<input type=\"password\" name=\"password\" id=\"pw\" placeholder=\"Leave empty to keep current\">"
-        "<label>Timezone</label>"
-        "<select name=\"timezone\" id=\"tz\">"
-        "<option value=\"CET-1CEST,M3.5.0,M10.5.0/3\">Europe/Paris</option>"
-        "<option value=\"GMT0BST,M3.5.0/1,M10.5.0\">Europe/London</option>"
-        "<option value=\"EET-2EEST,M3.5.0/3,M10.5.0/4\">Europe/Helsinki</option>"
-        "<option value=\"EST5EDT,M3.2.0,M11.1.0\">US/Eastern</option>"
-        "<option value=\"CST6CDT,M3.2.0,M11.1.0\">US/Central</option>"
-        "<option value=\"MST7MDT,M3.2.0,M11.1.0\">US/Mountain</option>"
-        "<option value=\"PST8PDT,M3.2.0,M11.1.0\">US/Pacific</option>"
-        "<option value=\"JST-9\">Asia/Tokyo</option>"
-        "<option value=\"CST-8\">Asia/Shanghai</option>"
-        "<option value=\"IST-5:30\">Asia/Kolkata</option>"
-        "<option value=\"AEST-10AEDT,M10.1.0,M4.1.0/3\">Australia/Sydney</option>"
-        "<option value=\"UTC0\">UTC</option>"
-        "</select>"
-        "<label>Fetch Interval</label>"
-        "<select name=\"fetch_int\" id=\"fi\">"
-        "<option value=\"1\">1 min</option>"
-        "<option value=\"2\">2 min</option>"
-        "<option value=\"5\">5 min</option>"
-        "<option value=\"10\">10 min</option>"
-        "<option value=\"15\">15 min</option>"
-        "<option value=\"30\">30 min</option>"
-        "</select>"
-        "<button type=\"submit\">Save</button>"
-        "</form>"
-        "<h3 style=\"margin-top:24px\">Anthropic Account</h3>"
-        "<p class=\"hint\">Token: %s</p>"
-        "<p>1. <a href=\"%s?code=true&client_id=%s&response_type=code"
-        "&redirect_uri=" OAUTH_REDIRECT_ENC "&scope=" OAUTH_SCOPE_ENC
-        "&code_challenge=%s&code_challenge_method=S256&state=%s\" target=\"_blank\" rel=\"noreferrer noopener\" id=\"al\">"
-        "Login with Anthropic</a></p>"
-"<p class=\"hint\"><a href=\"#\" id=\"cp\">Copy auth URL to clipboard</a></p>"
-        "<p>2. Paste the code here:</p>"
-        "<input id=\"oc\" placeholder=\"Paste authorization code\">"
-        "<button id=\"ox\">Authorize</button>"
-        "<button id=\"rst\" style=\"background:#dc2626;margin-top:16px;width:100%%\">Reset WiFi &amp; Reboot</button>"
-        "<script>"
-        "document.getElementById('tz').value='%s'||'CET-1CEST,M3.5.0,M10.5.0/3';"
-        "document.getElementById('fi').value='%s'||'10';"
-        "document.getElementById('f').onsubmit=function(e){"
-        "e.preventDefault();"
-        "var b='ssid='+encodeURIComponent(document.getElementById('ss').value)"
-        "+'&password='+encodeURIComponent(document.getElementById('pw').value)"
-        "+'&timezone='+encodeURIComponent(document.getElementById('tz').value)"
-        "+'&fetch_int='+encodeURIComponent(document.getElementById('fi').value);"
-        "fetch('/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
-        ".then(function(){var o=document.getElementById('ok');o.style.display='block';setTimeout(function(){o.style.display='none'},2000)})"
-        "};"
-        "document.getElementById('ox').onclick=function(){"
-        "var c=document.getElementById('oc').value.trim();"
-        "if(!c){alert('Paste the code first');return;}"
-        "fetch('/oauth/exchange',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'code='+encodeURIComponent(c)})"
-        ".then(function(r){return r.json()})"
-        ".then(function(d){if(d.ok){var o=document.getElementById('ok');o.textContent='Authorized!';o.style.display='block';"
-        "setTimeout(function(){o.style.display='none';o.textContent='Saved!'},3000)}"
-        "else alert('Authorization failed')})"
-        ".catch(function(){alert('Authorization failed')})"
-        "};"
-        "document.getElementById('cp').onclick=function(e){"
-        "e.preventDefault();navigator.clipboard.writeText(document.getElementById('al').href)"
-        ".then(function(){e.target.textContent='Copied!'})};"
-        "document.getElementById('rst').onclick=function(){"
-        "if(confirm('Reset WiFi and reboot?'))"
-        "fetch('/wifi-reset',{method:'POST'}).then(function(){document.body.innerHTML='<h2>Rebooting...</h2>'})"
-        "};"
-        "</script></body></html>",
-        creds->ssid, s_sta_ip,
-        rt_display,
-        OAUTH_AUTH_URL, OAUTH_CLIENT_ID,
-        s_pkce_challenge, s_pkce_verifier,
-        creds->timezone, creds->fetch_interval);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "ssid", creds.ssid);
+    cJSON_AddStringToObject(root, "ip", s_sta_ip);
+    cJSON_AddStringToObject(root, "timezone", creds.timezone);
+    cJSON_AddStringToObject(root, "fetch_interval", creds.fetch_interval);
+    cJSON_AddStringToObject(root, "token_status", token_status);
+    cJSON_AddStringToObject(root, "auth_url", auth_url);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
 
-    free(creds);
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, page, len);
-    free(page);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
     return ESP_OK;
 }
 
-static esp_err_t http_post_config(httpd_req_t *req)
+static esp_err_t http_post_api_config(httpd_req_t *req)
 {
-    char *buf = malloc(1024);
+    char *buf = malloc(512);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
-    int received = httpd_req_recv(req, buf, 1023);
-    if (received <= 0) {
-        free(buf);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
-        return ESP_FAIL;
-    }
+    int received = httpd_req_recv(req, buf, 511);
+    if (received <= 0) { free(buf); return ESP_FAIL; }
     buf[received] = '\0';
 
-    char ssid[33] = {0};
-    char password[65] = {0};
-    char refresh_tk[256] = {0};
-    char timezone[64] = {0};
-    char fetch_int[8] = {0};
+    char ssid[33] = {0}, password[65] = {0}, timezone[64] = {0}, fetch_int[8] = {0};
     parse_form_field(buf, "ssid", ssid, sizeof(ssid));
     parse_form_field(buf, "password", password, sizeof(password));
-    parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
     parse_form_field(buf, "timezone", timezone, sizeof(timezone));
     parse_form_field(buf, "fetch_int", fetch_int, sizeof(fetch_int));
     free(buf);
 
-    /* Only update non-empty fields */
-    bool wifi_changed = false;
-    if (strlen(ssid) > 0) { nvs_write_str("ssid", ssid); wifi_changed = true; }
-    if (strlen(password) > 0) { nvs_write_str("password", password); wifi_changed = true; }
-    if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
+    if (strlen(ssid) > 0) nvs_write_str("ssid", ssid);
+    if (strlen(password) > 0) nvs_write_str("password", password);
     if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
     if (strlen(fetch_int) > 0) nvs_write_str("fetch_int", fetch_int);
-    ESP_LOGI(TAG, "Config updated%s", wifi_changed ? " (WiFi changed — reboot needed)" : "");
+    ESP_LOGI(TAG, "Config updated");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+static esp_err_t http_get_api_display(httpd_req_t *req)
+{
+    char display_cfg[64] = {0};
+    nvs_read_str("display_cfg", display_cfg, sizeof(display_cfg));
+
+    /* Default: all screens enabled in order */
+    if (strlen(display_cfg) == 0)
+        strcpy(display_cfg, "0:1,1:1,2:1,3:1");
+
+    /* Build JSON response */
+    cJSON *root = cJSON_CreateObject();
+    cJSON *screens = cJSON_AddArrayToObject(root, "screens");
+
+    /* Parse "id:enabled,id:enabled,..." */
+    char *saveptr, *token;
+    char tmp[64];
+    strncpy(tmp, display_cfg, sizeof(tmp) - 1);
+    static const char *names[] = {"Usage Values", "Graph 7-day", "Graph 5-hour", "Clock"};
+
+    for (token = strtok_r(tmp, ",", &saveptr); token; token = strtok_r(NULL, ",", &saveptr)) {
+        int id = 0, en = 1;
+        sscanf(token, "%d:%d", &id, &en);
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "id", id);
+        cJSON_AddStringToObject(item, "name", (id >= 0 && id < 4) ? names[id] : "?");
+        cJSON_AddBoolToObject(item, "enabled", en);
+        cJSON_AddItemToArray(screens, item);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    return ESP_OK;
+}
+
+static esp_err_t http_post_api_display(httpd_req_t *req)
+{
+    char buf[128];
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) return ESP_FAIL;
+    buf[received] = '\0';
+
+    char screens[64] = {0};
+    parse_form_field(buf, "screens", screens, sizeof(screens));
+    if (strlen(screens) > 0) {
+        nvs_write_str("display_cfg", screens);
+        ESP_LOGI(TAG, "Display config: %s", screens);
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -656,15 +616,21 @@ static void start_http_server_station(void)
         return;
     }
 
-    httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = http_get_config };
-    httpd_uri_t cfg = { .uri = "/config", .method = HTTP_POST, .handler = http_post_config };
-    httpd_uri_t rst = { .uri = "/wifi-reset", .method = HTTP_POST, .handler = http_post_wifi_reset };
-    httpd_uri_t oex = { .uri = "/oauth/exchange", .method = HTTP_POST, .handler = http_post_oauth_exchange };
+    httpd_uri_t root     = { .uri = "/",                .method = HTTP_GET,  .handler = http_get_settings };
+    httpd_uri_t api_cfg  = { .uri = "/api/config",     .method = HTTP_GET,  .handler = http_get_api_config };
+    httpd_uri_t api_cfgp = { .uri = "/api/config",     .method = HTTP_POST, .handler = http_post_api_config };
+    httpd_uri_t api_disp = { .uri = "/api/display",    .method = HTTP_GET,  .handler = http_get_api_display };
+    httpd_uri_t api_dispp= { .uri = "/api/display",    .method = HTTP_POST, .handler = http_post_api_display };
+    httpd_uri_t api_oauth= { .uri = "/api/oauth/exchange", .method = HTTP_POST, .handler = http_post_oauth_exchange };
+    httpd_uri_t api_rst  = { .uri = "/api/wifi-reset", .method = HTTP_POST, .handler = http_post_wifi_reset };
 
     httpd_register_uri_handler(s_httpd, &root);
-    httpd_register_uri_handler(s_httpd, &cfg);
-    httpd_register_uri_handler(s_httpd, &rst);
-    httpd_register_uri_handler(s_httpd, &oex);
+    httpd_register_uri_handler(s_httpd, &api_cfg);
+    httpd_register_uri_handler(s_httpd, &api_cfgp);
+    httpd_register_uri_handler(s_httpd, &api_disp);
+    httpd_register_uri_handler(s_httpd, &api_dispp);
+    httpd_register_uri_handler(s_httpd, &api_oauth);
+    httpd_register_uri_handler(s_httpd, &api_rst);
 
     ESP_LOGI(TAG, "HTTP server started (station)");
 }
@@ -885,4 +851,10 @@ esp_err_t wifi_mgr_update_tokens(const char *access_token, const char *refresh_t
     }
     ESP_LOGI(TAG, "Tokens updated in NVS");
     return err;
+}
+
+void wifi_mgr_get_display_config(char *buf, size_t buf_len)
+{
+    if (nvs_read_str("display_cfg", buf, buf_len) != ESP_OK || strlen(buf) == 0)
+        strncpy(buf, "0:1,1:1,2:1,3:1", buf_len - 1);
 }

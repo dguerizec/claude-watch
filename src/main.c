@@ -176,12 +176,35 @@ static void fetch_and_display_usage(void)
 /* ─── Auto-fetch timer ──────────────────────────────────────────────── */
 
 static TimerHandle_t s_auto_fetch_timer = NULL;
+static int s_fetch_period_s = 600;
+
+static void schedule_next_fetch(void);
 
 static void auto_fetch_timer_cb(TimerHandle_t timer)
 {
     (void)timer;
     ESP_LOGI(TAG, "Auto-fetch timer fired");
     fetch_and_display_usage();
+    schedule_next_fetch();
+}
+
+static void schedule_next_fetch(void)
+{
+    time_t now = time(NULL);
+    /* Align to clock: next_fetch = next multiple of period */
+    time_t next = now - (now % s_fetch_period_s) + s_fetch_period_s;
+    int delay_s = (int)(next - now);
+    if (delay_s < 5) delay_s += s_fetch_period_s;  /* safety margin */
+
+    if (!s_auto_fetch_timer) {
+        s_auto_fetch_timer = xTimerCreate("auto_fetch",
+            pdMS_TO_TICKS(delay_s * 1000),
+            pdFALSE, NULL, auto_fetch_timer_cb);  /* one-shot, re-armed in cb */
+    } else {
+        xTimerChangePeriod(s_auto_fetch_timer, pdMS_TO_TICKS(delay_s * 1000), 0);
+    }
+    xTimerStart(s_auto_fetch_timer, 0);
+    ESP_LOGI(TAG, "Next fetch in %ds (aligned to %d-min grid)", delay_s, s_fetch_period_s / 60);
 }
 
 static void start_auto_fetch(void)
@@ -192,14 +215,24 @@ static void start_auto_fetch(void)
     wifi_mgr_get_credentials(&creds);
     int interval_min = atoi(creds.fetch_interval);
     if (interval_min <= 0) interval_min = 10;
+    s_fetch_period_s = interval_min * 60;
 
-    fetch_and_display_usage();
+    time_t now = time(NULL);
+    bool time_valid = (now > 1700000000);  /* SNTP synced? */
 
-    s_auto_fetch_timer = xTimerCreate("auto_fetch",
-        pdMS_TO_TICKS(interval_min * 60 * 1000),
-        pdTRUE, NULL, auto_fetch_timer_cb);
-    xTimerStart(s_auto_fetch_timer, 0);
-    ESP_LOGI(TAG, "Auto-fetch started: every %d min", interval_min);
+    if (!time_valid) {
+        /* Time not synced yet — fetch immediately, align later */
+        fetch_and_display_usage();
+        s_auto_fetch_timer = xTimerCreate("auto_fetch",
+            pdMS_TO_TICKS(s_fetch_period_s * 1000),
+            pdFALSE, NULL, auto_fetch_timer_cb);
+        xTimerStart(s_auto_fetch_timer, 0);
+        ESP_LOGI(TAG, "Auto-fetch started (time not synced, immediate + %dmin)", interval_min);
+    } else {
+        /* Time valid — align to grid, skip if recent data exists */
+        schedule_next_fetch();
+        ESP_LOGI(TAG, "Auto-fetch started: every %d min (aligned)", interval_min);
+    }
 }
 
 /* ─── Display screens (called only from display_task) ───────────────── */
@@ -439,10 +472,37 @@ static bool is_in_wifi_button(uint16_t tx, uint16_t ty)
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
 typedef enum { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_5H, VIEW_CLOCK, VIEW_COUNT } view_t;
-static view_t s_current_view = VIEW_USAGE;
+
+/* Configurable screen cycle — loaded from NVS */
+static view_t s_view_cycle[VIEW_COUNT] = { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_5H, VIEW_CLOCK };
+static int s_view_cycle_len = VIEW_COUNT;
+static int s_view_idx = 0;         /* current index in s_view_cycle */
 static api_usage_t s_last_usage = {0};
 static bool s_has_usage = false;
-static bool s_settings_overlay = false;  /* settings QR shown over clock view */
+static bool s_settings_overlay = false;
+
+#define s_current_view s_view_cycle[s_view_idx]
+
+static void load_display_config(void)
+{
+    char cfg[64];
+    wifi_mgr_get_display_config(cfg, sizeof(cfg));
+    s_view_cycle_len = 0;
+    char *saveptr, *tok;
+    for (tok = strtok_r(cfg, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+        int id = 0, en = 1;
+        sscanf(tok, "%d:%d", &id, &en);
+        if (en && id >= 0 && id < VIEW_COUNT && s_view_cycle_len < VIEW_COUNT)
+            s_view_cycle[s_view_cycle_len++] = (view_t)id;
+    }
+    if (s_view_cycle_len == 0) {
+        s_view_cycle[0] = VIEW_USAGE;
+        s_view_cycle_len = 1;
+    }
+    /* Clamp index if cycle shrank, but don't reset to 0 */
+    if (s_view_idx >= s_view_cycle_len)
+        s_view_idx = 0;
+}
 
 static void display_task(void *arg)
 {
@@ -464,16 +524,34 @@ static void display_task(void *arg)
             case WIFI_MGR_STATE_PROVISIONING:
                 draw_provisioning_screen();
                 break;
-            case WIFI_MGR_STATE_CONNECTING:
-                /* Only show connecting screen on first boot, not reconnects */
-                if (!s_has_usage)
+            case WIFI_MGR_STATE_CONNECTING: {
+                wifi_mgr_credentials_t cr;
+                wifi_mgr_get_credentials(&cr);
+                /* Only show "Connecting..." on first setup */
+                if (!s_has_usage && strlen(cr.refresh_token) == 0)
                     draw_connecting_screen();
                 break;
-            case WIFI_MGR_STATE_CONNECTED:
+            }
+            case WIFI_MGR_STATE_CONNECTED: {
                 init_time_sync();
-                if (!s_has_usage)
+                wifi_mgr_credentials_t creds;
+                wifi_mgr_get_credentials(&creds);
+                if (!s_has_usage && strlen(creds.refresh_token) == 0) {
+                    /* First setup — show settings QR */
                     draw_connected_screen();
+                } else if (!s_has_usage) {
+                    /* Normal reboot — draw initial view immediately */
+                    s_clock_cleared = false;
+                    switch (s_current_view) {
+                    case VIEW_CLOCK:    draw_clock_screen(); break;
+                    case VIEW_USAGE:    draw_loading_screen(); break;
+                    case VIEW_GRAPH_7D: draw_loading_screen(); break;
+                    case VIEW_GRAPH_5H: draw_loading_screen(); break;
+                    default: break;
+                    }
+                }
                 start_auto_fetch();
+            }
                 break;
             case WIFI_MGR_STATE_FAILED:
                 /* Only show failure if we have nothing else to display */
@@ -486,12 +564,11 @@ static void display_task(void *arg)
             break;
 
         case DISP_MSG_LOADING:
-            /* Never overwrite existing display for a background fetch */
-            if (!s_has_usage)
-                draw_loading_screen();
+            /* Silent — initial view already drawn by CONNECTED handler */
             break;
 
-        case DISP_MSG_USAGE:
+        case DISP_MSG_USAGE: {
+            bool first = !s_has_usage;
             s_last_usage = msg.usage;
             s_has_usage = true;
             usage_store_append(msg.usage.five_hour.utilization, msg.usage.seven_day.utilization);
@@ -501,8 +578,10 @@ static void display_task(void *arg)
                 draw_graph_5h(&msg.usage);
             else if (s_current_view == VIEW_USAGE)
                 draw_usage_screen(&msg.usage);
-            /* VIEW_CLOCK: don't redraw — clock is independent of usage */
+            else if (s_current_view == VIEW_CLOCK && first)
+                draw_clock_screen();  /* first data arrived — draw clock over boot splash */
             break;
+        }
 
         case DISP_MSG_ERROR:
             /* Don't overwrite display for a background fetch error */
@@ -519,7 +598,8 @@ static void display_task(void *arg)
         case DISP_MSG_TOGGLE:
             if (!s_has_usage) break;
             s_settings_overlay = false;
-            s_current_view = (s_current_view + 1) % VIEW_COUNT;
+            load_display_config();  /* pick up any web UI changes */
+            s_view_idx = (s_view_idx + 1) % s_view_cycle_len;
             s_clock_cleared = false;
             switch (s_current_view) {
             case VIEW_USAGE:    draw_usage_screen(&s_last_usage); break;
@@ -664,6 +744,9 @@ void app_main(void)
     } else {
         wifi_mgr_init(wifi_state_cb, NULL);
     }
+
+    /* Load display config from NVS */
+    load_display_config();
 
     /* Create display queue + task BEFORE starting WiFi.
      * From this point on, only display_task touches the LCD/SD. */

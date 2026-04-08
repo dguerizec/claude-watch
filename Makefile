@@ -1,6 +1,9 @@
-.PHONY: build flash monitor clean fullclean menuconfig
+.PHONY: build flash monitor clean fullclean menuconfig web
 
-build:
+web:
+	cd web && bash build.sh
+
+build: web
 	pio run
 
 flash:
@@ -15,7 +18,7 @@ clean:
 	pio run -t clean
 
 fullclean:
-	rm -rf .pio
+	rm -rf .pio web/dist web/node_modules
 
 menuconfig:
 	pio run -t menuconfig

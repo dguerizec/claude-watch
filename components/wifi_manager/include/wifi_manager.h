@@ -72,6 +72,14 @@ const char *wifi_mgr_get_sta_ip(void);
  */
 esp_err_t wifi_mgr_update_tokens(const char *access_token, const char *refresh_token);
 
+/**
+ * Read display config from NVS.
+ * Format: "id:enabled,id:enabled,..." e.g. "0:1,1:1,2:1,3:1"
+ * @param buf     Output buffer
+ * @param buf_len Buffer size
+ */
+void wifi_mgr_get_display_config(char *buf, size_t buf_len);
+
 #ifdef __cplusplus
 }
 #endif
