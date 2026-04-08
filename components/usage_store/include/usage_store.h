@@ -13,6 +13,11 @@ typedef struct {
     float value;  /* usage percentage 0–100 */
 } usage_data_point_t;
 
+typedef enum {
+    USAGE_COL_FIVE_HOUR,
+    USAGE_COL_SEVEN_DAY,
+} usage_column_t;
+
 /**
  * Configure SD card SPI parameters (lazy mount — no SPI activity here).
  */
@@ -34,9 +39,11 @@ esp_err_t usage_store_append(float five_hour, float seven_day);
  * @param buf        Output buffer for data points
  * @param max_points Maximum number of points to read
  * @param stride     Keep every Nth matching point (1 = all, 8 = every 8th)
+ * @param col        Which column to read (USAGE_COL_FIVE_HOUR or USAGE_COL_SEVEN_DAY)
  * @return Number of points read, or 0 on error
  */
-int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points, int stride);
+int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points,
+                     int stride, usage_column_t col);
 
 #ifdef __cplusplus
 }

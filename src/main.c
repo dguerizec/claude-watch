@@ -284,13 +284,13 @@ static void draw_no_token_screen(void)
 /* ─── Graph screen ──────────────────────────────────────────────────── */
 
 #define MAX_GRAPH_POINTS 4096
-#define GRAPH_WEEKS      5
 
-static void draw_graph_screen(api_usage_t *usage)
+static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotations,
+                               int num_ticks, time_t reset_epoch, float current_pct,
+                               usage_column_t col)
 {
     time_t now = time(NULL);
-    time_t period_start = now - GRAPH_WEEKS * 7 * 24 * 3600;
-    time_t period_end = usage->seven_day.resets_at_epoch;
+    time_t data_start = now - num_rotations * (time_t)period_secs;
 
     usage_data_point_t *points = malloc(MAX_GRAPH_POINTS * sizeof(usage_data_point_t));
     if (!points) {
@@ -299,21 +299,36 @@ static void draw_graph_screen(api_usage_t *usage)
     }
 
     /* Two-pass read: old data downsampled, recent data full resolution */
-    time_t week_ago = now - 7 * 24 * 3600;
+    time_t recent_start = now - period_secs;
     int old_budget = MAX_GRAPH_POINTS / 4;
-    int n_old = usage_store_read(period_start, week_ago - 1, points, old_budget, 8);
-    int n_recent = usage_store_read(week_ago, now, points + n_old,
-                                    MAX_GRAPH_POINTS - n_old, 1);
+    int n_old = usage_store_read(data_start, recent_start - 1, points, old_budget, 8, col);
+    int n_recent = usage_store_read(recent_start, now, points + n_old,
+                                    MAX_GRAPH_POINTS - n_old, 1, col);
     int n = n_old + n_recent;
-    ESP_LOGI(TAG, "Graph data: %d old (stride 8) + %d recent = %d", n_old, n_recent, n);
+    ESP_LOGI(TAG, "Graph: %d old + %d recent = %d points (%s)",
+             n_old, n_recent, n, col == USAGE_COL_FIVE_HOUR ? "5h" : "7d");
 
-    polar_graph_draw(s_panel, points, n, period_end, now);
+    polar_graph_draw(s_panel, points, n, period_secs, num_rotations, num_ticks, reset_epoch, now);
     free(points);
 
-    /* Overlay current value at center (center = 0% so no data overlap) */
+    /* Overlay current value at center */
     char pct[16];
-    snprintf(pct, sizeof(pct), "%.0f%%", usage->seven_day.utilization);
+    snprintf(pct, sizeof(pct), "%.0f%%", current_pct);
     display_text_draw_string_centered(s_panel, 113, pct, 0xFFFF, 0x0000, 2);
+}
+
+static void draw_graph_7d(api_usage_t *usage)
+{
+    draw_polar_screen(usage, 7 * 24 * 3600, 5, 7,
+                      usage->seven_day.resets_at_epoch,
+                      usage->seven_day.utilization, USAGE_COL_SEVEN_DAY);
+}
+
+static void draw_graph_5h(api_usage_t *usage)
+{
+    draw_polar_screen(usage, 5 * 3600, 5, 5,
+                      usage->five_hour.resets_at_epoch,
+                      usage->five_hour.utilization, USAGE_COL_FIVE_HOUR);
 }
 
 /* ─── Clock screen ─────────────────────────────────────────────────── */
@@ -423,7 +438,7 @@ static bool is_in_wifi_button(uint16_t tx, uint16_t ty)
 
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
-typedef enum { VIEW_USAGE, VIEW_GRAPH, VIEW_CLOCK } view_t;
+typedef enum { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_5H, VIEW_CLOCK, VIEW_COUNT } view_t;
 static view_t s_current_view = VIEW_USAGE;
 static api_usage_t s_last_usage = {0};
 static bool s_has_usage = false;
@@ -480,8 +495,10 @@ static void display_task(void *arg)
             s_last_usage = msg.usage;
             s_has_usage = true;
             usage_store_append(msg.usage.five_hour.utilization, msg.usage.seven_day.utilization);
-            if (s_current_view == VIEW_GRAPH)
-                draw_graph_screen(&msg.usage);
+            if (s_current_view == VIEW_GRAPH_7D)
+                draw_graph_7d(&msg.usage);
+            else if (s_current_view == VIEW_GRAPH_5H)
+                draw_graph_5h(&msg.usage);
             else if (s_current_view == VIEW_USAGE)
                 draw_usage_screen(&msg.usage);
             /* VIEW_CLOCK: don't redraw — clock is independent of usage */
@@ -502,12 +519,14 @@ static void display_task(void *arg)
         case DISP_MSG_TOGGLE:
             if (!s_has_usage) break;
             s_settings_overlay = false;
-            s_current_view = (s_current_view + 1) % 3;
+            s_current_view = (s_current_view + 1) % VIEW_COUNT;
             s_clock_cleared = false;
             switch (s_current_view) {
-            case VIEW_USAGE: draw_usage_screen(&s_last_usage); break;
-            case VIEW_GRAPH: draw_graph_screen(&s_last_usage); break;
-            case VIEW_CLOCK: draw_clock_screen(); break;
+            case VIEW_USAGE:    draw_usage_screen(&s_last_usage); break;
+            case VIEW_GRAPH_7D: draw_graph_7d(&s_last_usage); break;
+            case VIEW_GRAPH_5H: draw_graph_5h(&s_last_usage); break;
+            case VIEW_CLOCK:    draw_clock_screen(); break;
+            default: break;
             }
             break;
 

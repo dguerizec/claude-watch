@@ -14,9 +14,7 @@ static const char *TAG = "polar_graph";
 #define W        240
 #define H        240
 #define STRIP_H  40       /* rows per strip — 240*40*2 = 19,200 bytes */
-#define PERIOD_S (7 * 24 * 3600)
 #define SPIRAL_N 180      /* points for burn-rate spiral (every 2°) */
-#define NUM_WEEKS 5       /* current + 4 previous */
 
 static inline uint16_t sw(uint16_t c) { return (c >> 8) | (c << 8); }
 
@@ -66,42 +64,39 @@ static inline void polar_xy(float angle, float r, int *x, int *y)
 }
 
 /* Compute burn rate (0–100) for a timestamp within its billing period */
-static inline float burn_rate_at(time_t ts, time_t week_start)
+static inline float burn_rate_at(time_t ts, time_t week_start, int psecs)
 {
-    float frac = (float)(ts - week_start) / PERIOD_S;
+    float frac = (float)(ts - week_start) / psecs;
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     return frac * 100.0f;
 }
 
-/* ── Color tables — progressively dimmer for older weeks ─────────────── */
+/* ── Color tables — progressively dimmer for older rotations ──────────── */
 
-/* Green (under budget): 00FF00 → dimmer each week */
-static const uint16_t greens[NUM_WEEKS] = {
-    0x07E0,   /* week 0 (current): bright green */
-    0x04E0,   /* week 1 */
-    0x02E0,   /* week 2 */
-    0x0160,   /* week 3 */
-    0x00C0,   /* week 4 (oldest) */
+#define MAX_ROTATIONS 8
+
+/* Green (under budget): bright → dim */
+static const uint16_t greens[MAX_ROTATIONS] = {
+    0x07E0, 0x04E0, 0x02E0, 0x0160, 0x00C0, 0x0060, 0x0040, 0x0020,
 };
 
-/* Red (over budget): FF0000 → dimmer each week */
-static const uint16_t reds[NUM_WEEKS] = {
-    0xF800,   /* week 0 (current): bright red */
-    0xA000,   /* week 1 */
-    0x6000,   /* week 2 */
-    0x3000,   /* week 3 */
-    0x1800,   /* week 4 (oldest) */
+/* Red (over budget): bright → dim */
+static const uint16_t reds[MAX_ROTATIONS] = {
+    0xF800, 0xA000, 0x6000, 0x3000, 0x1800, 0x1000, 0x0800, 0x0800,
 };
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 void polar_graph_draw(esp_lcd_panel_handle_t panel,
                       const usage_data_point_t *points, int num_points,
+                      int period_secs, int num_rotations, int num_ticks,
                       time_t period_end, time_t now)
 {
     /* Pre-compute per-point: screen coords, week index, color.
      * int16_t for coords (0–239 range) to halve memory vs int. */
+    if (num_rotations > MAX_ROTATIONS) num_rotations = MAX_ROTATIONS;
+
     int16_t *scr_x = NULL, *scr_y = NULL;
     uint8_t *pt_week = NULL;
     uint16_t *pt_color = NULL;
@@ -118,7 +113,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
         }
         for (int i = 0; i < num_points; i++) {
             /* Angular position (wraps every 7 days, north = period_end) */
-            float frac = (float)(points[i].timestamp - period_end) / PERIOD_S;
+            float frac = (float)(points[i].timestamp - period_end) / period_secs;
             frac = fmodf(frac, 1.0f);
             if (frac < 0.0f) frac += 1.0f;
             float angle = 2.0f * M_PI * frac;
@@ -131,14 +126,14 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             scr_y[i] = sy;
 
             /* Week index: 0 = current, 1 = previous, ... */
-            int w = (int)((float)(period_end - points[i].timestamp) / PERIOD_S);
+            int w = (int)((float)(period_end - points[i].timestamp) / period_secs);
             if (w < 0) w = 0;
-            if (w >= NUM_WEEKS) w = NUM_WEEKS - 1;
+            if (w >= num_rotations) w = num_rotations - 1;
             pt_week[i] = w;
 
             /* Color: green/red based on burn rate, dimmed by week */
-            time_t week_start = period_end - (w + 1) * (time_t)PERIOD_S;
-            float br = burn_rate_at(points[i].timestamp, week_start);
+            time_t week_start = period_end - (w + 1) * (time_t)period_secs;
+            float br = burn_rate_at(points[i].timestamp, week_start, period_secs);
             bool over = (points[i].value >= br);
             pt_color[i] = sw(over ? reds[w] : greens[w]);
         }
@@ -154,7 +149,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     }
 
     /* Pre-compute "now" hand */
-    float now_frac = (float)(now - period_end) / PERIOD_S;
+    float now_frac = (float)(now - period_end) / period_secs;
     now_frac = fmodf(now_frac, 1.0f);
     if (now_frac < 0.0f) now_frac += 1.0f;
     float now_angle = 2.0f * M_PI * now_frac;
@@ -162,10 +157,11 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     polar_xy(now_angle, MIN_R, &now_x0, &now_y0);
     polar_xy(now_angle, MAX_R, &now_x1, &now_y1);
 
-    /* Pre-compute day ticks */
-    int tick_x0[7], tick_y0[7], tick_x1[7], tick_y1[7];
-    for (int d = 0; d < 7; d++) {
-        float a = 2.0f * M_PI * d / 7.0f;
+    /* Pre-compute ticks */
+    if (num_ticks > 12) num_ticks = 12;
+    int tick_x0[12], tick_y0[12], tick_x1[12], tick_y1[12];
+    for (int d = 0; d < num_ticks; d++) {
+        float a = 2.0f * M_PI * d / num_ticks;
         polar_xy(a, MAX_R - 8, &tick_x0[d], &tick_y0[d]);
         polar_xy(a, MAX_R,     &tick_x1[d], &tick_y1[d]);
     }
@@ -198,8 +194,8 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
         draw_circle(strip, sy, sh, MIN_R, c_grid);
         draw_circle(strip, sy, sh, MAX_R, c_grid);
 
-        /* Day tick marks */
-        for (int d = 0; d < 7; d++) {
+        /* Tick marks */
+        for (int d = 0; d < num_ticks; d++) {
             int ymin = tick_y0[d] < tick_y1[d] ? tick_y0[d] : tick_y1[d];
             int ymax = tick_y0[d] > tick_y1[d] ? tick_y0[d] : tick_y1[d];
             if (ymax < sy || ymin >= sy + sh) continue;
@@ -216,7 +212,7 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
 
         /* Data polyline — oldest week first, newest last (z-order).
          * Skip segment if value decreases (= billing period reset). */
-        for (int w = NUM_WEEKS - 1; w >= 0; w--) {
+        for (int w = num_rotations - 1; w >= 0; w--) {
             for (int i = 0; i < num_points - 1; i++) {
                 if (pt_week[i] != w || pt_week[i + 1] != w) continue;
                 if (points[i].value > points[i + 1].value) continue;
@@ -247,5 +243,5 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     free(scr_y);
     free(pt_week);
     free(pt_color);
-    ESP_LOGI(TAG, "Graph drawn: %d points, %d weeks", num_points, NUM_WEEKS);
+    ESP_LOGI(TAG, "Graph drawn: %d points, %d weeks", num_points, num_rotations);
 }

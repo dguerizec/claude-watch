@@ -103,7 +103,8 @@ esp_err_t usage_store_append(float five_hour, float seven_day)
     return ESP_OK;
 }
 
-int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points, int stride)
+int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_points,
+                     int stride, usage_column_t col)
 {
     if (!s_configured) return 0;
     if (stride < 1) stride = 1;
@@ -139,7 +140,7 @@ int usage_store_read(time_t from, time_t to, usage_data_point_t *buf, int max_po
                             continue;
                         }
                         buf[count].timestamp = (time_t)ts;
-                        buf[count].value = seven_d;
+                        buf[count].value = (col == USAGE_COL_FIVE_HOUR) ? five_h : seven_d;
                         count++;
                     }
                 }
