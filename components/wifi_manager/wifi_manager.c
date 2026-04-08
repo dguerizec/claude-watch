@@ -262,13 +262,11 @@ static esp_err_t http_post_connect(httpd_req_t *req)
 
     char ssid[33] = {0};
     char password[65] = {0};
-    char refresh_tk[256] = {0};
     char timezone[64] = {0};
     char fetch_int[8] = {0};
 
     parse_form_field(buf, "ssid", ssid, sizeof(ssid));
     parse_form_field(buf, "password", password, sizeof(password));
-    parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
     parse_form_field(buf, "timezone", timezone, sizeof(timezone));
     parse_form_field(buf, "fetch_int", fetch_int, sizeof(fetch_int));
 
@@ -280,7 +278,6 @@ static esp_err_t http_post_connect(httpd_req_t *req)
     ESP_LOGI(TAG, "Saving credentials: SSID='%s'", ssid);
     nvs_write_str("ssid", ssid);
     nvs_write_str("password", password);
-    if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
     if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
     if (strlen(fetch_int) > 0) nvs_write_str("fetch_int", fetch_int);
 
