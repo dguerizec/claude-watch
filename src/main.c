@@ -314,9 +314,33 @@ static void draw_graph_screen(api_usage_t *usage)
     display_text_draw_string_centered(s_panel, 113, pct, 0xFFFF, 0x0000, 2);
 }
 
+/* ─── Clock screen ─────────────────────────────────────────────────── */
+
+static bool s_clock_cleared = false;
+
+static void draw_clock_screen(void)
+{
+    if (!s_clock_cleared) {
+        fill_screen(s_panel, COLOR_BLACK);
+        s_clock_cleared = true;
+    }
+
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+
+    char date[32], timebuf[32];
+    strftime(date, sizeof(date), "%Y-%m-%d", &local);
+    strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &local);
+
+    display_text_draw_string_centered(s_panel, 100, date, COLOR_WHITE, COLOR_BLACK, 2);
+    display_text_draw_string_centered(s_panel, 125, timebuf, COLOR_WHITE, COLOR_BLACK, 2);
+}
+
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
-static bool s_showing_graph = false;
+typedef enum { VIEW_USAGE, VIEW_GRAPH, VIEW_CLOCK } view_t;
+static view_t s_current_view = VIEW_USAGE;
 static api_usage_t s_last_usage = {0};
 static bool s_has_usage = false;
 
@@ -325,7 +349,14 @@ static void display_task(void *arg)
     disp_msg_t msg;
 
     while (1) {
-        if (xQueueReceive(s_display_queue, &msg, portMAX_DELAY) != pdTRUE) continue;
+        TickType_t wait = (s_current_view == VIEW_CLOCK)
+                          ? pdMS_TO_TICKS(1000) : portMAX_DELAY;
+        if (xQueueReceive(s_display_queue, &msg, wait) != pdTRUE) {
+            /* Timeout — refresh clock */
+            if (s_current_view == VIEW_CLOCK)
+                draw_clock_screen();
+            continue;
+        }
 
         switch (msg.type) {
         case DISP_MSG_WIFI_STATE:
@@ -364,10 +395,11 @@ static void display_task(void *arg)
             s_last_usage = msg.usage;
             s_has_usage = true;
             usage_store_append(msg.usage.five_hour.utilization, msg.usage.seven_day.utilization);
-            if (s_showing_graph)
+            if (s_current_view == VIEW_GRAPH)
                 draw_graph_screen(&msg.usage);
-            else
+            else if (s_current_view == VIEW_USAGE)
                 draw_usage_screen(&msg.usage);
+            /* VIEW_CLOCK: don't redraw — clock is independent of usage */
             break;
 
         case DISP_MSG_ERROR:
@@ -384,11 +416,13 @@ static void display_task(void *arg)
 
         case DISP_MSG_TOGGLE:
             if (!s_has_usage) break;
-            s_showing_graph = !s_showing_graph;
-            if (s_showing_graph)
-                draw_graph_screen(&s_last_usage);
-            else
-                draw_usage_screen(&s_last_usage);
+            s_current_view = (s_current_view + 1) % 3;
+            s_clock_cleared = false;
+            switch (s_current_view) {
+            case VIEW_USAGE: draw_usage_screen(&s_last_usage); break;
+            case VIEW_GRAPH: draw_graph_screen(&s_last_usage); break;
+            case VIEW_CLOCK: draw_clock_screen(); break;
+            }
             break;
         }
     }

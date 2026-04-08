@@ -214,10 +214,12 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             sline(strip, sy, sh, spi_x[i], spi_y[i], spi_x[i+1], spi_y[i+1], c_spiral);
         }
 
-        /* Data polyline — oldest week first, newest last (z-order) */
+        /* Data polyline — oldest week first, newest last (z-order).
+         * Skip segment if value decreases (= billing period reset). */
         for (int w = NUM_WEEKS - 1; w >= 0; w--) {
             for (int i = 0; i < num_points - 1; i++) {
                 if (pt_week[i] != w || pt_week[i + 1] != w) continue;
+                if (points[i].value > points[i + 1].value) continue;
                 int ymin = scr_y[i] < scr_y[i+1] ? scr_y[i] : scr_y[i+1];
                 int ymax = scr_y[i] > scr_y[i+1] ? scr_y[i] : scr_y[i+1];
                 if (ymax < sy || ymin >= sy + sh) continue;
