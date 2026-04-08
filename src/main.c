@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <time.h>
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
@@ -65,6 +66,7 @@ typedef enum {
     DISP_MSG_ERROR,
     DISP_MSG_NO_TOKEN,
     DISP_MSG_TOGGLE,
+    DISP_MSG_SETTINGS,
 } disp_msg_type_t;
 
 typedef struct {
@@ -318,10 +320,75 @@ static void draw_graph_screen(api_usage_t *usage)
 
 static bool s_clock_cleared = false;
 
+/* WiFi reset button — 60px circle at bottom of clock screen */
+#define BTN_CX   120
+#define BTN_CY   210
+#define BTN_R    30
+#define BTN_COLOR 0x000A   /* dark blue */
+
+static void draw_wifi_button(void)
+{
+    /* Render button into a single buffer to avoid DMA race conditions.
+     * One DMA transaction instead of hundreds of individual pixel writes. */
+    int bx = BTN_CX - BTN_R;
+    int by = BTN_CY - BTN_R;
+    int bw = BTN_R * 2;
+    int bh = BTN_R * 2;
+    if (by + bh > LCD_V_RES) bh = LCD_V_RES - by;
+
+    uint16_t *buf = heap_caps_malloc(bw * bh * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!buf) return;
+    memset(buf, 0, bw * bh * sizeof(uint16_t));
+
+    uint16_t bg = swap16(BTN_COLOR);
+    uint16_t fg = swap16(COLOR_WHITE);
+
+    /* Filled circle background */
+    for (int ly = 0; ly < bh; ly++) {
+        int dy = ly - BTN_R;
+        if (abs(dy) > BTN_R) continue;
+        int dx = (int)sqrtf((float)(BTN_R * BTN_R - dy * dy));
+        int x0 = BTN_R - dx, x1 = BTN_R + dx;
+        for (int x = x0; x <= x1 && x < bw; x++)
+            if (x >= 0) buf[ly * bw + x] = bg;
+    }
+
+    /* WiFi icon — dot 8px below button center */
+    int dot_ly = BTN_R + 8;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            int x = BTN_R + dx, y = dot_ly + dy;
+            if (x >= 0 && x < bw && y >= 0 && y < bh)
+                buf[y * bw + x] = fg;
+        }
+
+    /* WiFi arcs — top quadrant only */
+    int arc_radii[] = {8, 14, 20};
+    for (int a = 0; a < 3; a++) {
+        int r = arc_radii[a];
+        int x = r, y = 0, d = 1 - r;
+        while (x >= y) {
+            int px1 = BTN_R + y, px2 = BTN_R - y, py = dot_ly - x;
+            if (py >= 0 && py < bh) {
+                if (px1 >= 0 && px1 < bw) buf[py * bw + px1] = fg;
+                if (px2 >= 0 && px2 < bw) buf[py * bw + px2] = fg;
+            }
+            y++;
+            if (d <= 0) d += 2 * y + 1;
+            else { x--; d += 2 * (y - x) + 1; }
+        }
+    }
+
+    esp_lcd_panel_draw_bitmap(s_panel, bx, by, bx + bw, by + bh, buf);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    free(buf);
+}
+
 static void draw_clock_screen(void)
 {
     if (!s_clock_cleared) {
         fill_screen(s_panel, COLOR_BLACK);
+        draw_wifi_button();
         s_clock_cleared = true;
     }
 
@@ -337,23 +404,41 @@ static void draw_clock_screen(void)
     display_text_draw_string_centered(s_panel, 125, timebuf, COLOR_WHITE, COLOR_BLACK, 2);
 }
 
+static void draw_settings_screen(void)
+{
+    char url[40];
+    snprintf(url, sizeof(url), "http://%s", wifi_mgr_get_sta_ip());
+    fill_screen(s_panel, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 8, "Settings", COLOR_WHITE, COLOR_BLACK, 2);
+    qr_display_show(s_panel, url, COLOR_WHITE, COLOR_BLACK);
+    display_text_draw_string_centered(s_panel, 220, wifi_mgr_get_sta_ip(), COLOR_WHITE, COLOR_BLACK, 1);
+}
+
+static bool is_in_wifi_button(uint16_t tx, uint16_t ty)
+{
+    int dx = (int)tx - BTN_CX;
+    int dy = (int)ty - BTN_CY;
+    return (dx * dx + dy * dy) <= BTN_R * BTN_R;
+}
+
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
 typedef enum { VIEW_USAGE, VIEW_GRAPH, VIEW_CLOCK } view_t;
 static view_t s_current_view = VIEW_USAGE;
 static api_usage_t s_last_usage = {0};
 static bool s_has_usage = false;
+static bool s_settings_overlay = false;  /* settings QR shown over clock view */
 
 static void display_task(void *arg)
 {
     disp_msg_t msg;
 
     while (1) {
-        TickType_t wait = (s_current_view == VIEW_CLOCK)
+        TickType_t wait = (s_current_view == VIEW_CLOCK && !s_settings_overlay)
                           ? pdMS_TO_TICKS(1000) : portMAX_DELAY;
         if (xQueueReceive(s_display_queue, &msg, wait) != pdTRUE) {
-            /* Timeout — refresh clock */
-            if (s_current_view == VIEW_CLOCK)
+            /* Timeout — refresh clock (only if no overlay) */
+            if (s_current_view == VIEW_CLOCK && !s_settings_overlay)
                 draw_clock_screen();
             continue;
         }
@@ -416,6 +501,7 @@ static void display_task(void *arg)
 
         case DISP_MSG_TOGGLE:
             if (!s_has_usage) break;
+            s_settings_overlay = false;
             s_current_view = (s_current_view + 1) % 3;
             s_clock_cleared = false;
             switch (s_current_view) {
@@ -423,6 +509,11 @@ static void display_task(void *arg)
             case VIEW_GRAPH: draw_graph_screen(&s_last_usage); break;
             case VIEW_CLOCK: draw_clock_screen(); break;
             }
+            break;
+
+        case DISP_MSG_SETTINGS:
+            s_settings_overlay = true;
+            draw_settings_screen();
             break;
         }
     }
@@ -570,9 +661,33 @@ void app_main(void)
             if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
                 wifi_mgr_state_t st = wifi_mgr_get_state();
                 if (st == WIFI_MGR_STATE_CONNECTED) {
-                    ESP_LOGI(TAG, "Touch — toggling view");
-                    disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE };
-                    xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
+                    if (s_current_view == VIEW_CLOCK && is_in_wifi_button(td.x, td.y)) {
+                        /* WiFi button — hold 3s to reset, short tap for settings QR */
+                        ESP_LOGI(TAG, "WiFi button touched");
+                        int held = 0;
+                        for (int i = 0; i < 30; i++) {
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                            chsc6x_touch_data_t td2;
+                            if (chsc6x_read(touch, &td2) == ESP_OK && td2.touched)
+                                held++;
+                            else
+                                break;
+                        }
+                        if (held >= 25) {
+                            ESP_LOGI(TAG, "WiFi reset confirmed");
+                            wifi_mgr_erase_credentials();
+                            vTaskDelay(pdMS_TO_TICKS(500));
+                            esp_restart();
+                        } else {
+                            /* Short tap — show settings QR */
+                            disp_msg_t smsg = { .type = DISP_MSG_SETTINGS };
+                            xQueueSend(s_display_queue, &smsg, pdMS_TO_TICKS(100));
+                        }
+                    } else {
+                        ESP_LOGI(TAG, "Touch — toggling view");
+                        disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE };
+                        xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
+                    }
                     vTaskDelay(pdMS_TO_TICKS(500));
                 } else if (st == WIFI_MGR_STATE_FAILED) {
                     ESP_LOGI(TAG, "Touch in FAILED state — erasing and rebooting");

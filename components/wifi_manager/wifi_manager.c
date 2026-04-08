@@ -317,6 +317,10 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<div class=\"info\">WiFi: <b>%s</b><br>IP: %s</div>"
         "<div class=\"ok\" id=\"ok\">Saved!</div>"
         "<form id=\"f\">"
+        "<label>WiFi SSID</label>"
+        "<input name=\"ssid\" id=\"ss\" placeholder=\"Leave empty to keep current\">"
+        "<label>WiFi Password</label>"
+        "<input type=\"password\" name=\"password\" id=\"pw\" placeholder=\"Leave empty to keep current\">"
         "<label>Timezone</label>"
         "<select name=\"timezone\" id=\"tz\">"
         "<option value=\"CET-1CEST,M3.5.0,M10.5.0/3\">Europe/Paris</option>"
@@ -348,16 +352,23 @@ static esp_err_t http_get_config(httpd_req_t *req)
         "<p class=\"hint\">Current: %s</p>"
         "<button type=\"submit\">Save</button>"
         "</form>"
+        "<button id=\"rst\" style=\"background:#dc2626;margin-top:16px;width:100%%\">Reset WiFi &amp; Reboot</button>"
         "<script>"
         "document.getElementById('tz').value='%s'||'CET-1CEST,M3.5.0,M10.5.0/3';"
         "document.getElementById('fi').value='%s'||'10';"
         "document.getElementById('f').onsubmit=function(e){"
         "e.preventDefault();"
-        "var b='timezone='+encodeURIComponent(document.getElementById('tz').value)"
+        "var b='ssid='+encodeURIComponent(document.getElementById('ss').value)"
+        "+'&password='+encodeURIComponent(document.getElementById('pw').value)"
+        "+'&timezone='+encodeURIComponent(document.getElementById('tz').value)"
         "+'&fetch_int='+encodeURIComponent(document.getElementById('fi').value)"
         "+'&refresh_tk='+encodeURIComponent(document.getElementById('rt').value);"
         "fetch('/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
         ".then(function(){var o=document.getElementById('ok');o.style.display='block';setTimeout(function(){o.style.display='none'},2000)})"
+        "};"
+        "document.getElementById('rst').onclick=function(){"
+        "if(confirm('Reset WiFi and reboot?'))"
+        "fetch('/wifi-reset',{method:'POST'}).then(function(){document.body.innerHTML='<h2>Rebooting...</h2>'})"
         "};"
         "</script></body></html>",
         creds->ssid, s_sta_ip, rt_display, creds->timezone, creds->fetch_interval);
@@ -384,23 +395,43 @@ static esp_err_t http_post_config(httpd_req_t *req)
     }
     buf[received] = '\0';
 
+    char ssid[33] = {0};
+    char password[65] = {0};
     char refresh_tk[256] = {0};
     char timezone[64] = {0};
     char fetch_int[8] = {0};
+    parse_form_field(buf, "ssid", ssid, sizeof(ssid));
+    parse_form_field(buf, "password", password, sizeof(password));
     parse_form_field(buf, "refresh_tk", refresh_tk, sizeof(refresh_tk));
     parse_form_field(buf, "timezone", timezone, sizeof(timezone));
     parse_form_field(buf, "fetch_int", fetch_int, sizeof(fetch_int));
     free(buf);
 
     /* Only update non-empty fields */
+    bool wifi_changed = false;
+    if (strlen(ssid) > 0) { nvs_write_str("ssid", ssid); wifi_changed = true; }
+    if (strlen(password) > 0) { nvs_write_str("password", password); wifi_changed = true; }
     if (strlen(refresh_tk) > 0) nvs_write_str("refresh_tk", refresh_tk);
     if (strlen(timezone) > 0) nvs_write_str("timezone", timezone);
     if (strlen(fetch_int) > 0) nvs_write_str("fetch_int", fetch_int);
-    ESP_LOGI(TAG, "Config updated");
+    ESP_LOGI(TAG, "Config updated%s", wifi_changed ? " (WiFi changed — reboot needed)" : "");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
+}
+
+static esp_err_t http_post_wifi_reset(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "WiFi reset requested via web");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+
+    /* Erase WiFi credentials and reboot after response is sent */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    wifi_mgr_erase_credentials();
+    esp_restart();
+    return ESP_OK;  /* unreachable */
 }
 
 /* ---------- HTTP server ---------- */
@@ -441,9 +472,11 @@ static void start_http_server_station(void)
 
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = http_get_config };
     httpd_uri_t cfg = { .uri = "/config", .method = HTTP_POST, .handler = http_post_config };
+    httpd_uri_t rst = { .uri = "/wifi-reset", .method = HTTP_POST, .handler = http_post_wifi_reset };
 
     httpd_register_uri_handler(s_httpd, &root);
     httpd_register_uri_handler(s_httpd, &cfg);
+    httpd_register_uri_handler(s_httpd, &rst);
 
     ESP_LOGI(TAG, "HTTP server started (station)");
 }
