@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+#include <time.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -71,6 +73,16 @@ const char *wifi_mgr_get_sta_ip(void);
  * Update tokens in NVS (called after OAuth refresh).
  */
 esp_err_t wifi_mgr_update_tokens(const char *access_token, const char *refresh_token);
+
+/**
+ * Save last usage values to NVS for display on next boot.
+ */
+void wifi_mgr_save_last_usage(float fh, time_t fh_epoch, float sd, time_t sd_epoch);
+
+/**
+ * Load last usage values from NVS. Returns false if not set.
+ */
+bool wifi_mgr_load_last_usage(float *fh, time_t *fh_epoch, float *sd, time_t *sd_epoch);
 
 /**
  * Read display config from NVS.

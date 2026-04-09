@@ -853,6 +853,40 @@ esp_err_t wifi_mgr_update_tokens(const char *access_token, const char *refresh_t
     return err;
 }
 
+/* Cached usage: 2 floats + 2 epochs = 16 bytes */
+typedef struct __attribute__((packed)) {
+    float five_hour;
+    float seven_day;
+    time_t five_hour_reset;
+    time_t seven_day_reset;
+} last_usage_blob_t;
+
+void wifi_mgr_save_last_usage(float fh, time_t fh_epoch, float sd, time_t sd_epoch)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    last_usage_blob_t blob = { fh, sd, fh_epoch, sd_epoch };
+    nvs_set_blob(h, "last_usage", &blob, sizeof(blob));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+bool wifi_mgr_load_last_usage(float *fh, time_t *fh_epoch, float *sd, time_t *sd_epoch)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    last_usage_blob_t blob;
+    size_t len = sizeof(blob);
+    esp_err_t err = nvs_get_blob(h, "last_usage", &blob, &len);
+    nvs_close(h);
+    if (err != ESP_OK || len != sizeof(blob)) return false;
+    *fh = blob.five_hour;
+    *sd = blob.seven_day;
+    *fh_epoch = blob.five_hour_reset;
+    *sd_epoch = blob.seven_day_reset;
+    return true;
+}
+
 void wifi_mgr_get_display_config(char *buf, size_t buf_len)
 {
     if (nvs_read_str("display_cfg", buf, buf_len) != ESP_OK || strlen(buf) == 0)

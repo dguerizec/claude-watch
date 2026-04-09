@@ -593,6 +593,9 @@ static void display_task(void *arg)
             s_last_usage = msg.usage;
             s_has_usage = true;
             usage_store_append(msg.usage.five_hour.utilization, msg.usage.seven_day.utilization);
+            wifi_mgr_save_last_usage(
+                msg.usage.five_hour.utilization, msg.usage.five_hour.resets_at_epoch,
+                msg.usage.seven_day.utilization, msg.usage.seven_day.resets_at_epoch);
             if (s_current_view == VIEW_GRAPH_7D)
                 draw_graph_7d(&msg.usage);
             else if (s_current_view == VIEW_GRAPH_5H)
@@ -779,8 +782,31 @@ void app_main(void)
         wifi_mgr_init(wifi_state_cb, NULL);
     }
 
-    /* Load display config from NVS */
+    /* Load display config and last usage values from NVS */
     load_display_config();
+    {
+        float fh, sd;
+        time_t fh_epoch, sd_epoch;
+        if (wifi_mgr_load_last_usage(&fh, &fh_epoch, &sd, &sd_epoch)) {
+            s_last_usage.five_hour.utilization = fh;
+            s_last_usage.five_hour.resets_at_epoch = fh_epoch;
+            s_last_usage.seven_day.utilization = sd;
+            s_last_usage.seven_day.resets_at_epoch = sd_epoch;
+            /* Format display strings from epochs */
+            static const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                           "Jul","Aug","Sep","Oct","Nov","Dec"};
+            struct tm local;
+            localtime_r(&fh_epoch, &local);
+            snprintf(s_last_usage.five_hour.resets_at, sizeof(s_last_usage.five_hour.resets_at),
+                     "%s %d %02d:%02d", months[local.tm_mon], local.tm_mday, local.tm_hour, local.tm_min);
+            localtime_r(&sd_epoch, &local);
+            snprintf(s_last_usage.seven_day.resets_at, sizeof(s_last_usage.seven_day.resets_at),
+                     "%s %d %02d:%02d", months[local.tm_mon], local.tm_mday, local.tm_hour, local.tm_min);
+            s_last_usage.valid = true;
+            s_has_usage = true;
+            ESP_LOGI(TAG, "Restored: 5h=%.0f%% 7d=%.0f%%", fh, sd);
+        }
+    }
 
     /* Create display queue + task BEFORE starting WiFi.
      * From this point on, only display_task touches the LCD/SD. */
