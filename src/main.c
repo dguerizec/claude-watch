@@ -67,6 +67,7 @@ typedef enum {
     DISP_MSG_NO_TOKEN,
     DISP_MSG_TOGGLE,
     DISP_MSG_SETTINGS,
+    DISP_MSG_DISMISS,
 } disp_msg_type_t;
 
 typedef struct {
@@ -518,8 +519,21 @@ static void display_task(void *arg)
         bool clock_active = (s_current_view == VIEW_CLOCK && !s_settings_overlay
                              && wifi_mgr_get_state() == WIFI_MGR_STATE_CONNECTED
                              && s_has_usage);
-        TickType_t wait = clock_active ? pdMS_TO_TICKS(1000) : portMAX_DELAY;
+        TickType_t wait;
+        if (s_settings_overlay)
+            wait = pdMS_TO_TICKS(60000);    /* 60s timeout to dismiss settings QR */
+        else if (clock_active)
+            wait = pdMS_TO_TICKS(1000);
+        else
+            wait = portMAX_DELAY;
+
         if (xQueueReceive(s_display_queue, &msg, wait) != pdTRUE) {
+            if (s_settings_overlay) {
+                /* Timeout — dismiss settings overlay */
+                s_settings_overlay = false;
+                s_clock_cleared = false;
+                goto redraw_current;
+            }
             if (clock_active)
                 draw_clock_screen();
             continue;
@@ -610,6 +624,22 @@ static void display_task(void *arg)
             else
                 s_view_idx = (s_view_idx + 1) % s_view_cycle_len;
             s_clock_cleared = false;
+            goto redraw_current;
+
+        case DISP_MSG_SETTINGS:
+            s_settings_overlay = true;
+            draw_settings_screen();
+            break;
+
+        case DISP_MSG_DISMISS:
+            if (s_settings_overlay) {
+                s_settings_overlay = false;
+                s_clock_cleared = false;
+                goto redraw_current;
+            }
+            break;
+
+        redraw_current:
             switch (s_current_view) {
             case VIEW_USAGE:    draw_usage_screen(&s_last_usage); break;
             case VIEW_GRAPH_7D: draw_graph_7d(&s_last_usage); break;
@@ -617,11 +647,6 @@ static void display_task(void *arg)
             case VIEW_CLOCK:    draw_clock_screen(); break;
             default: break;
             }
-            break;
-
-        case DISP_MSG_SETTINGS:
-            s_settings_overlay = true;
-            draw_settings_screen();
             break;
         }
     }
@@ -788,13 +813,11 @@ void app_main(void)
                     t_lx = td.x; t_ly = td.y;
                     t_frames++;
 
-                    /* Long press on WiFi button → reset WiFi */
+                    /* Long press → WiFi reset (from any screen) */
                     if (t_frames == LONG_PRESS
-                        && s_current_view == VIEW_CLOCK
-                        && is_in_wifi_button(t_sx, t_sy)
                         && abs((int)t_lx - (int)t_sx) < TAP_MAX
                         && abs((int)t_ly - (int)t_sy) < TAP_MAX) {
-                        ESP_LOGI(TAG, "WiFi reset (long press)");
+                        ESP_LOGI(TAG, "Long press — WiFi reset");
                         wifi_mgr_erase_credentials();
                         vTaskDelay(pdMS_TO_TICKS(500));
                         esp_restart();
@@ -805,21 +828,25 @@ void app_main(void)
                     int dy = (int)t_ly - (int)t_sy;
                     wifi_mgr_state_t st = wifi_mgr_get_state();
 
-                    if (abs(dx) > SWIPE_MIN && abs(dx) > abs(dy) * 2) {
+                    if (s_settings_overlay) {
+                        /* Any gesture dismisses settings overlay */
+                        ESP_LOGI(TAG, "Dismiss settings overlay");
+                        disp_msg_t dmsg = { .type = DISP_MSG_DISMISS };
+                        xQueueSend(s_display_queue, &dmsg, pdMS_TO_TICKS(100));
+                    } else if (dy > SWIPE_MIN && abs(dy) > abs(dx) * 2) {
+                        /* Swipe down → show settings QR */
+                        ESP_LOGI(TAG, "Swipe down — settings");
+                        disp_msg_t smsg = { .type = DISP_MSG_SETTINGS };
+                        xQueueSend(s_display_queue, &smsg, pdMS_TO_TICKS(100));
+                    } else if (abs(dx) > SWIPE_MIN && abs(dx) > abs(dy) * 2) {
                         /* Horizontal swipe */
-                        int dir = (dx < 0) ? 1 : -1;  /* left = next, right = prev */
+                        int dir = (dx < 0) ? 1 : -1;
                         ESP_LOGI(TAG, "Swipe %s", dir > 0 ? "next" : "prev");
                         disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE, .direction = dir };
                         xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
                     } else if (abs(dx) < TAP_MAX && abs(dy) < TAP_MAX && t_frames < 10) {
                         /* Tap */
-                        if (st == WIFI_MGR_STATE_CONNECTED
-                            && s_current_view == VIEW_CLOCK
-                            && is_in_wifi_button(t_sx, t_sy)) {
-                            ESP_LOGI(TAG, "WiFi button tap — settings QR");
-                            disp_msg_t smsg = { .type = DISP_MSG_SETTINGS };
-                            xQueueSend(s_display_queue, &smsg, pdMS_TO_TICKS(100));
-                        } else if (st == WIFI_MGR_STATE_FAILED) {
+                        if (st == WIFI_MGR_STATE_FAILED) {
                             ESP_LOGI(TAG, "Tap in FAILED — rebooting");
                             wifi_mgr_erase_credentials();
                             vTaskDelay(pdMS_TO_TICKS(500));
