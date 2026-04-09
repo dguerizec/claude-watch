@@ -74,6 +74,7 @@ typedef struct {
     union {
         wifi_mgr_state_t wifi_state;
         api_usage_t usage;
+        int direction;  /* +1 = next, -1 = prev (for DISP_MSG_TOGGLE) */
     };
 } disp_msg_t;
 
@@ -604,7 +605,10 @@ static void display_task(void *arg)
         case DISP_MSG_TOGGLE:
             s_settings_overlay = false;
             load_display_config();  /* pick up any web UI changes */
-            s_view_idx = (s_view_idx + 1) % s_view_cycle_len;
+            if (msg.direction < 0)
+                s_view_idx = (s_view_idx - 1 + s_view_cycle_len) % s_view_cycle_len;
+            else
+                s_view_idx = (s_view_idx + 1) % s_view_cycle_len;
             s_clock_cleared = false;
             switch (s_current_view) {
             case VIEW_USAGE:    draw_usage_screen(&s_last_usage); break;
@@ -761,49 +765,71 @@ void app_main(void)
     /* Start WiFi — callbacks will now go through the queue */
     wifi_mgr_start();
 
-    /* Main loop — touch handling only, no direct LCD access */
+    /* Main loop — gesture detection, no direct LCD access.
+     * Swipe left/right = next/prev screen, tap = WiFi button action. */
+    bool touching = false;
+    uint16_t t_sx = 0, t_sy = 0, t_lx = 0, t_ly = 0;
+    int t_frames = 0;
+
+    #define SWIPE_MIN    40   /* min pixels for a swipe */
+    #define TAP_MAX      15   /* max pixels for a tap */
+    #define LONG_PRESS   30   /* frames (× 100ms = 3s) */
+
     while (1) {
         if (touch_ok) {
             chsc6x_touch_data_t td;
-            if (chsc6x_read(touch, &td) == ESP_OK && td.touched) {
-                wifi_mgr_state_t st = wifi_mgr_get_state();
-                if (st == WIFI_MGR_STATE_CONNECTED) {
-                    if (s_current_view == VIEW_CLOCK && is_in_wifi_button(td.x, td.y)) {
-                        /* WiFi button — hold 3s to reset, short tap for settings QR */
-                        ESP_LOGI(TAG, "WiFi button touched");
-                        int held = 0;
-                        for (int i = 0; i < 30; i++) {
-                            vTaskDelay(pdMS_TO_TICKS(100));
-                            chsc6x_touch_data_t td2;
-                            if (chsc6x_read(touch, &td2) == ESP_OK && td2.touched)
-                                held++;
-                            else
-                                break;
-                        }
-                        if (held >= 25) {
-                            ESP_LOGI(TAG, "WiFi reset confirmed");
+            if (chsc6x_read(touch, &td) == ESP_OK) {
+                if (td.touched) {
+                    if (!touching) {
+                        t_sx = td.x; t_sy = td.y;
+                        t_frames = 0;
+                        touching = true;
+                    }
+                    t_lx = td.x; t_ly = td.y;
+                    t_frames++;
+
+                    /* Long press on WiFi button → reset WiFi */
+                    if (t_frames == LONG_PRESS
+                        && s_current_view == VIEW_CLOCK
+                        && is_in_wifi_button(t_sx, t_sy)
+                        && abs((int)t_lx - (int)t_sx) < TAP_MAX
+                        && abs((int)t_ly - (int)t_sy) < TAP_MAX) {
+                        ESP_LOGI(TAG, "WiFi reset (long press)");
+                        wifi_mgr_erase_credentials();
+                        vTaskDelay(pdMS_TO_TICKS(500));
+                        esp_restart();
+                    }
+                } else if (touching) {
+                    touching = false;
+                    int dx = (int)t_lx - (int)t_sx;
+                    int dy = (int)t_ly - (int)t_sy;
+                    wifi_mgr_state_t st = wifi_mgr_get_state();
+
+                    if (abs(dx) > SWIPE_MIN && abs(dx) > abs(dy) * 2) {
+                        /* Horizontal swipe */
+                        int dir = (dx < 0) ? 1 : -1;  /* left = next, right = prev */
+                        ESP_LOGI(TAG, "Swipe %s", dir > 0 ? "next" : "prev");
+                        disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE, .direction = dir };
+                        xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
+                    } else if (abs(dx) < TAP_MAX && abs(dy) < TAP_MAX && t_frames < 10) {
+                        /* Tap */
+                        if (st == WIFI_MGR_STATE_CONNECTED
+                            && s_current_view == VIEW_CLOCK
+                            && is_in_wifi_button(t_sx, t_sy)) {
+                            ESP_LOGI(TAG, "WiFi button tap — settings QR");
+                            disp_msg_t smsg = { .type = DISP_MSG_SETTINGS };
+                            xQueueSend(s_display_queue, &smsg, pdMS_TO_TICKS(100));
+                        } else if (st == WIFI_MGR_STATE_FAILED) {
+                            ESP_LOGI(TAG, "Tap in FAILED — rebooting");
                             wifi_mgr_erase_credentials();
                             vTaskDelay(pdMS_TO_TICKS(500));
                             esp_restart();
-                        } else {
-                            /* Short tap — show settings QR */
-                            disp_msg_t smsg = { .type = DISP_MSG_SETTINGS };
-                            xQueueSend(s_display_queue, &smsg, pdMS_TO_TICKS(100));
                         }
-                    } else {
-                        ESP_LOGI(TAG, "Touch — toggling view");
-                        disp_msg_t tmsg = { .type = DISP_MSG_TOGGLE };
-                        xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
                     }
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                } else if (st == WIFI_MGR_STATE_FAILED) {
-                    ESP_LOGI(TAG, "Touch in FAILED state — erasing and rebooting");
-                    wifi_mgr_erase_credentials();
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    esp_restart();
+                    vTaskDelay(pdMS_TO_TICKS(200));  /* debounce */
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));  /* 50ms polling for smoother gesture detection */
     }
 }
