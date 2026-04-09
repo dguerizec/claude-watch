@@ -514,11 +514,12 @@ static void display_task(void *arg)
     disp_msg_t msg;
 
     while (1) {
-        TickType_t wait = (s_current_view == VIEW_CLOCK && !s_settings_overlay)
-                          ? pdMS_TO_TICKS(1000) : portMAX_DELAY;
+        bool clock_active = (s_current_view == VIEW_CLOCK && !s_settings_overlay
+                             && wifi_mgr_get_state() == WIFI_MGR_STATE_CONNECTED
+                             && s_has_usage);
+        TickType_t wait = clock_active ? pdMS_TO_TICKS(1000) : portMAX_DELAY;
         if (xQueueReceive(s_display_queue, &msg, wait) != pdTRUE) {
-            /* Timeout — refresh clock (only if no overlay) */
-            if (s_current_view == VIEW_CLOCK && !s_settings_overlay)
+            if (clock_active)
                 draw_clock_screen();
             continue;
         }
