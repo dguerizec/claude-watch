@@ -68,6 +68,7 @@ typedef enum {
     DISP_MSG_TOGGLE,
     DISP_MSG_SETTINGS,
     DISP_MSG_DISMISS,
+    DISP_MSG_TAP,
 } disp_msg_type_t;
 
 typedef struct {
@@ -318,6 +319,16 @@ static void draw_no_token_screen(void)
 
 /* ─── Graph screen ──────────────────────────────────────────────────── */
 
+typedef enum { CENTER_USAGE, CENTER_BURN_RATE, CENTER_DELTA, CENTER_COUNT } center_mode_t;
+static center_mode_t s_center_mode = CENTER_USAGE;
+
+static void draw_graph_center(float current_pct, int period_secs, time_t reset_epoch);
+
+/* Remember active graph params for center redraw on tap */
+static float s_graph_pct = 0;
+static int s_graph_period = 0;
+static time_t s_graph_reset = 0;
+
 #define MAX_GRAPH_POINTS 4096
 
 static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotations,
@@ -348,13 +359,70 @@ static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotat
     polar_graph_draw(s_panel, points, n, period_secs, num_rotations, num_ticks, reset_epoch, now);
     free(points);
 
-    /* Overlay current value at center */
-    char pct[16];
-    if (current_pct >= 0)
-        snprintf(pct, sizeof(pct), "%.0f%%", current_pct);
-    else
-        strcpy(pct, "--");
-    display_text_draw_string_centered(s_panel, 113, pct, 0xFFFF, 0x0000, 2);
+    s_graph_pct = current_pct;
+    s_graph_period = period_secs;
+    s_graph_reset = reset_epoch;
+    draw_graph_center(current_pct, period_secs, reset_epoch);
+}
+
+/* Draw the center overlay on a polar graph — can be called independently on tap */
+static void draw_graph_center(float current_pct, int period_secs, time_t reset_epoch)
+{
+    char text[24];
+    uint16_t color = COLOR_WHITE;
+
+    if (reset_epoch == 0) {
+        strcpy(text, "--");
+    } else {
+        /* Compute max burn rate: fraction of billing period elapsed */
+        time_t now = time(NULL);
+        time_t period_start = reset_epoch - period_secs;
+        float elapsed_frac = (float)(now - period_start) / period_secs;
+        if (elapsed_frac < 0) elapsed_frac = 0;
+        if (elapsed_frac > 1) elapsed_frac = 1;
+        float max_burn = elapsed_frac * 100.0f;
+
+        switch (s_center_mode) {
+        case CENTER_USAGE:
+            snprintf(text, sizeof(text), "%.0f%%", current_pct);
+            color = COLOR_WHITE;
+            break;
+        case CENTER_BURN_RATE:
+            if (max_burn > 0)
+                snprintf(text, sizeof(text), "%.0f%%", current_pct / max_burn * 100.0f);
+            else
+                strcpy(text, "--");
+            color = 0x07FF;  /* cyan */
+            break;
+        case CENTER_DELTA: {
+            float delta = max_burn - current_pct;
+            snprintf(text, sizeof(text), "%+.0f%%", delta);
+            color = (delta >= 0) ? COLOR_GREEN : COLOR_RED;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    /* Clear center: filled black circle matching the inner graph boundary.
+     * Buffer content never changes (all black), so DMA reuse is safe. */
+    {
+        #define GCX 120
+        #define GCY 120
+        #define GR  30  /* MIN_R from polar_graph */
+        uint16_t *line = heap_caps_malloc(GR * 2 * sizeof(uint16_t), MALLOC_CAP_DMA);
+        if (line) {
+            memset(line, 0, GR * 2 * sizeof(uint16_t));
+            for (int dy = -GR + 1; dy < GR; dy++) {
+                int dx = (int)sqrtf((float)(GR * GR - dy * dy));
+                esp_lcd_panel_draw_bitmap(s_panel, GCX - dx, GCY + dy, GCX + dx, GCY + dy + 1, line);
+            }
+            vTaskDelay(pdMS_TO_TICKS(2));
+            free(line);
+        }
+    }
+    display_text_draw_string_centered(s_panel, 113, text, color, COLOR_BLACK, 2);
 }
 
 static void draw_graph_7d(api_usage_t *usage)
@@ -469,12 +537,7 @@ static void draw_settings_screen(void)
     display_text_draw_string_centered(s_panel, 220, wifi_mgr_get_sta_ip(), COLOR_WHITE, COLOR_BLACK, 1);
 }
 
-static bool is_in_wifi_button(uint16_t tx, uint16_t ty)
-{
-    int dx = (int)tx - BTN_CX;
-    int dy = (int)ty - BTN_CY;
-    return (dx * dx + dy * dy) <= BTN_R * BTN_R;
-}
+
 
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
@@ -639,6 +702,14 @@ static void display_task(void *arg)
                 s_settings_overlay = false;
                 s_clock_cleared = false;
                 goto redraw_current;
+            }
+            break;
+
+        case DISP_MSG_TAP:
+            /* Per-screen tap handler */
+            if (s_current_view == VIEW_GRAPH_7D || s_current_view == VIEW_GRAPH_5H) {
+                s_center_mode = (s_center_mode + 1) % CENTER_COUNT;
+                draw_graph_center(s_graph_pct, s_graph_period, s_graph_reset);
             }
             break;
 
@@ -877,6 +948,9 @@ void app_main(void)
                             wifi_mgr_erase_credentials();
                             vTaskDelay(pdMS_TO_TICKS(500));
                             esp_restart();
+                        } else if (st == WIFI_MGR_STATE_CONNECTED) {
+                            disp_msg_t tmsg = { .type = DISP_MSG_TAP };
+                            xQueueSend(s_display_queue, &tmsg, pdMS_TO_TICKS(100));
                         }
                     }
                     vTaskDelay(pdMS_TO_TICKS(200));  /* debounce */
