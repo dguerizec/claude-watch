@@ -67,8 +67,7 @@ On first boot (or after WiFi reset), the device starts a captive portal:
 
 Once connected to WiFi, the device needs authorization to access your Anthropic usage data:
 
-- Tap the display to cycle to the **clock view**
-- Tap the **WiFi button** (bottom of screen) to show the settings QR code
+- **Swipe down** on the display to show the settings QR code
 - Scan the QR or open `http://<device-ip>` in a browser
 - Click **"Login with Anthropic"** — authenticate in your browser
 - Copy the authorization code and paste it in the settings page
@@ -88,45 +87,38 @@ Accessible at `http://<device-ip>` when connected to the same WiFi:
 
 ## Display Views
 
-Tap the screen to cycle between views:
+**Swipe left/right** to navigate between views. Screens can be enabled/disabled and reordered via the settings web page.
 
 ### Values View
 
-Shows current API usage:
-```
-Claude Usage
-5h: 12%
-reset Apr 8 16:00
-7d: 23%
-reset Apr 10 06:00
-tap: graph
-```
+Shows current API usage percentages and reset times for both 5-hour and 7-day billing windows.
 
-### Polar Graph View
+### Polar Graph Views (7-day and 5-hour)
 
-A radar-style polar graph mapping 7 days onto a full circle:
+Radar-style polar graphs mapping a billing period onto a full circle:
 
 - **North (12 o'clock)** = billing period reset time
 - **Center** = 0% usage, **edge** = 100%
-- **Clockwise** winding, one full rotation = 7 days
+- **Clockwise** winding, one full rotation = one billing period
 - **Burn-rate spiral** (gray): ideal linear consumption from 0% to 100%
-- **Green** segments: under the burn rate
-- **Red** segments: over the burn rate
-- **5 weeks** of history with progressive dimming (newest = brightest)
-- **Now line** (gray): current time position
-- Current usage percentage displayed at center
+- **Green** segments: under the burn rate, **red**: over
+- **5 rotations** of history with progressive dimming (newest = brightest)
+- **Tap** to cycle center display: usage % → burn rate ratio → delta (green/red)
 
 ### Clock View
 
-Shows date and time in ISO format, updated every second:
-```
-2026-04-08
-14:32:05
-```
+Shows date and time in ISO 24H format, updated every second.
 
-A **WiFi button** (blue circle, bottom) provides:
-- **Short tap**: show settings page QR code
-- **Long press (3s)**: erase WiFi credentials and reboot
+### Gestures
+
+| Gesture | Action |
+|---------|--------|
+| **Swipe left** | Next screen |
+| **Swipe right** | Previous screen |
+| **Swipe down** | Show settings page QR code |
+| **Tap** (on settings QR) | Dismiss QR, return to previous screen |
+| **Long press 3s** (on settings QR) | Reset WiFi and reboot |
+| **Tap** (on graph views) | Cycle center display mode |
 
 ## Architecture
 

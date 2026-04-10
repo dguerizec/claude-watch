@@ -443,75 +443,10 @@ static void draw_graph_5h(api_usage_t *usage)
 
 static bool s_clock_cleared = false;
 
-/* WiFi reset button — 60px circle at bottom of clock screen */
-#define BTN_CX   120
-#define BTN_CY   210
-#define BTN_R    30
-#define BTN_COLOR 0x000A   /* dark blue */
-
-static void draw_wifi_button(void)
-{
-    /* Render button into a single buffer to avoid DMA race conditions.
-     * One DMA transaction instead of hundreds of individual pixel writes. */
-    int bx = BTN_CX - BTN_R;
-    int by = BTN_CY - BTN_R;
-    int bw = BTN_R * 2;
-    int bh = BTN_R * 2;
-    if (by + bh > LCD_V_RES) bh = LCD_V_RES - by;
-
-    uint16_t *buf = heap_caps_malloc(bw * bh * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!buf) return;
-    memset(buf, 0, bw * bh * sizeof(uint16_t));
-
-    uint16_t bg = swap16(BTN_COLOR);
-    uint16_t fg = swap16(COLOR_WHITE);
-
-    /* Filled circle background */
-    for (int ly = 0; ly < bh; ly++) {
-        int dy = ly - BTN_R;
-        if (abs(dy) > BTN_R) continue;
-        int dx = (int)sqrtf((float)(BTN_R * BTN_R - dy * dy));
-        int x0 = BTN_R - dx, x1 = BTN_R + dx;
-        for (int x = x0; x <= x1 && x < bw; x++)
-            if (x >= 0) buf[ly * bw + x] = bg;
-    }
-
-    /* WiFi icon — dot 8px below button center */
-    int dot_ly = BTN_R + 8;
-    for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
-            int x = BTN_R + dx, y = dot_ly + dy;
-            if (x >= 0 && x < bw && y >= 0 && y < bh)
-                buf[y * bw + x] = fg;
-        }
-
-    /* WiFi arcs — top quadrant only */
-    int arc_radii[] = {8, 14, 20};
-    for (int a = 0; a < 3; a++) {
-        int r = arc_radii[a];
-        int x = r, y = 0, d = 1 - r;
-        while (x >= y) {
-            int px1 = BTN_R + y, px2 = BTN_R - y, py = dot_ly - x;
-            if (py >= 0 && py < bh) {
-                if (px1 >= 0 && px1 < bw) buf[py * bw + px1] = fg;
-                if (px2 >= 0 && px2 < bw) buf[py * bw + px2] = fg;
-            }
-            y++;
-            if (d <= 0) d += 2 * y + 1;
-            else { x--; d += 2 * (y - x) + 1; }
-        }
-    }
-
-    esp_lcd_panel_draw_bitmap(s_panel, bx, by, bx + bw, by + bh, buf);
-    vTaskDelay(pdMS_TO_TICKS(2));
-    free(buf);
-}
-
 static void draw_clock_screen(void)
 {
     if (!s_clock_cleared) {
         fill_screen(s_panel, COLOR_BLACK);
-        draw_wifi_button();
         s_clock_cleared = true;
     }
 
@@ -910,11 +845,12 @@ void app_main(void)
                     t_lx = td.x; t_ly = td.y;
                     t_frames++;
 
-                    /* Long press → WiFi reset (from any screen) */
+                    /* Long press on settings overlay → WiFi reset */
                     if (t_frames == LONG_PRESS
+                        && s_settings_overlay
                         && abs((int)t_lx - (int)t_sx) < TAP_MAX
                         && abs((int)t_ly - (int)t_sy) < TAP_MAX) {
-                        ESP_LOGI(TAG, "Long press — WiFi reset");
+                        ESP_LOGI(TAG, "Long press on settings — WiFi reset");
                         wifi_mgr_erase_credentials();
                         vTaskDelay(pdMS_TO_TICKS(500));
                         esp_restart();
