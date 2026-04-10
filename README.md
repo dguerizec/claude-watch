@@ -2,6 +2,8 @@
 
 An ESP32-S3 device that monitors your Anthropic API usage in real time on a round display.
 
+![Claude Watch](ClaudeWatch.png)
+
 Built with a [Seeed Studio XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/) and [Round Display](https://wiki.seeedstudio.com/get_start_round_display/) (GC9A01 240x240 LCD + CHSC6X touch).
 
 ## Hardware
