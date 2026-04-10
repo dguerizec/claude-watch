@@ -178,6 +178,12 @@ python3 scripts/convert_usage.py sd_output
 
 This reads `~/.claude-usage/*.jsonl` and generates CSV files in `sd_output/ccusage/`. Copy the `ccusage/` folder to the SD card root.
 
+## Desk Stand (3D Print)
+
+![Desk Stand](CAD/ClaudeWatch-V1.png)
+
+A 3D-printable desk stand is available as a [STEP file](CAD/ClaudeWatch-V1.step).
+
 ## License
 
 MIT
