@@ -168,16 +168,6 @@ Auto-fetch timer (10min)
                unmount)       screen)    polar plot)
 ```
 
-## Importing Historical Data
-
-If you have usage history from `claude-monitor` (the Python-based monitor), you can import it to the SD card:
-
-```bash
-python3 scripts/convert_usage.py sd_output
-```
-
-This reads `~/.claude-usage/*.jsonl` and generates CSV files in `sd_output/ccusage/`. Copy the `ccusage/` folder to the SD card root.
-
 ## Desk Stand (3D Print)
 
 ![Desk Stand](CAD/ClaudeWatch-V1.png)
