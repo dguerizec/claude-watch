@@ -170,7 +170,8 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             time_t week_start = period_end - (w_actual + 1) * (time_t)period_secs;
             float br = burn_rate_at(points[i].timestamp, week_start, period_secs);
             bool over = (points[i].value >= br);
-            pt_color[i] = sw(over ? reds[w] : greens[w]);
+            int dim = (w_actual >= MAX_ROTATIONS) ? MAX_ROTATIONS - 1 : w_actual;
+            pt_color[i] = sw(over ? reds[dim] : greens[dim]);
         }
     }
 

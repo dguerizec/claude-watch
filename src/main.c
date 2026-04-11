@@ -719,7 +719,7 @@ static bool check_reset_gesture(chsc6x_handle_t touch)
     if (!touch) return false;
 
     ESP_LOGI(TAG, "Hold touch 3s to reset WiFi...");
-    display_text_draw_string_centered(s_panel, 130, "Hold 3s: reset", COLOR_WHITE, COLOR_BLACK, 1);
+    display_text_draw_string_centered(s_panel, 140, "Hold 3s: reset", COLOR_WHITE, COLOR_BLACK, 1);
 
     int held_count = 0;
     for (int i = 0; i < 30; i++) {
@@ -860,6 +860,13 @@ void app_main(void)
      * From this point on, only display_task touches the LCD/SD. */
     s_display_queue = xQueueCreate(4, sizeof(disp_msg_t));
     xTaskCreate(display_task, "display", 12288, NULL, 5, NULL);
+
+    /* If we have cached data, draw the initial view immediately
+     * to replace the boot splash without waiting for WiFi */
+    if (s_has_usage) {
+        disp_msg_t imsg = { .type = DISP_MSG_USAGE, .usage = s_last_usage };
+        xQueueSend(s_display_queue, &imsg, pdMS_TO_TICKS(100));
+    }
 
     /* Start WiFi — callbacks will now go through the queue */
     wifi_mgr_start();
