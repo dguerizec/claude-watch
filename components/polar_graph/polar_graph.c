@@ -119,7 +119,8 @@ static const uint16_t reds[MAX_ROTATIONS] = {
 void polar_graph_draw(esp_lcd_panel_handle_t panel,
                       const usage_data_point_t *points, int num_points,
                       int period_secs, int num_rotations, int num_ticks,
-                      time_t period_end, time_t now)
+                      time_t period_end, time_t now,
+                      float recovery_angle)
 {
     /* Pre-compute per-point: screen coords, week index, color.
      * int16_t for coords (0–239 range) to halve memory vs int. */
@@ -190,6 +191,15 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
     int now_x0, now_y0, now_x1, now_y1;
     polar_xy(now_angle, MIN_R, &now_x0, &now_y0);
     polar_xy(now_angle, MAX_R, &now_x1, &now_y1);
+
+    /* Pre-compute recovery marker triangle (red, pointing inward) */
+    int tr_tip_x = -1, tr_tip_y, tr_bl_x, tr_bl_y, tr_br_x, tr_br_y;
+    if (recovery_angle >= 0) {
+        float delta = 0.03f;  /* angular half-width ~3px at edge */
+        polar_xy(recovery_angle, MAX_R - 8, &tr_tip_x, &tr_tip_y);
+        polar_xy(recovery_angle - delta, MAX_R, &tr_bl_x, &tr_bl_y);
+        polar_xy(recovery_angle + delta, MAX_R, &tr_br_x, &tr_br_y);
+    }
 
     /* Pre-compute ticks */
     if (num_ticks > 12) num_ticks = 12;
@@ -267,6 +277,22 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             int ymax = now_y0 > now_y1 ? now_y0 : now_y1;
             if (!(ymax < sy || ymin >= sy + sh))
                 sline(strip, sy, sh, now_x0, now_y0, now_x1, now_y1, c_now);
+        }
+
+        /* Recovery marker — red triangle pointing inward */
+        if (tr_tip_x >= 0) {
+            uint16_t c_marker = sw(0xF800);
+            int ys[3] = { tr_tip_y, tr_bl_y, tr_br_y };
+            int ymin = ys[0], ymax = ys[0];
+            for (int k = 1; k < 3; k++) {
+                if (ys[k] < ymin) ymin = ys[k];
+                if (ys[k] > ymax) ymax = ys[k];
+            }
+            if (!(ymax < sy || ymin >= sy + sh)) {
+                sline(strip, sy, sh, tr_tip_x, tr_tip_y, tr_bl_x, tr_bl_y, c_marker);
+                sline(strip, sy, sh, tr_tip_x, tr_tip_y, tr_br_x, tr_br_y, c_marker);
+                sline(strip, sy, sh, tr_bl_x, tr_bl_y, tr_br_x, tr_br_y, c_marker);
+            }
         }
 
         esp_lcd_panel_draw_bitmap(panel, 0, sy, W, sy + sh, strip);

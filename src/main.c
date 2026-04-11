@@ -333,7 +333,7 @@ static time_t s_graph_reset = 0;
 
 static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotations,
                                int num_ticks, time_t reset_epoch, float current_pct,
-                               usage_column_t col)
+                               usage_column_t col, float recovery_angle)
 {
     time_t now = time(NULL);
     /* If no fetch yet, use now as reset reference — graph still shows SD history */
@@ -356,7 +356,7 @@ static void draw_polar_screen(api_usage_t *usage, int period_secs, int num_rotat
     ESP_LOGI(TAG, "Graph: %d old + %d recent = %d points (%s)",
              n_old, n_recent, n, col == USAGE_COL_FIVE_HOUR ? "5h" : "7d");
 
-    polar_graph_draw(s_panel, points, n, period_secs, num_rotations, num_ticks, reset_epoch, now);
+    polar_graph_draw(s_panel, points, n, period_secs, num_rotations, num_ticks, reset_epoch, now, recovery_angle);
     free(points);
 
     s_graph_pct = current_pct;
@@ -425,18 +425,40 @@ static void draw_graph_center(float current_pct, int period_secs, time_t reset_e
     display_text_draw_string_centered(s_panel, 113, text, color, COLOR_BLACK, 2);
 }
 
+static float compute_recovery_angle(float usage, int period_secs, time_t reset_epoch)
+{
+    if (reset_epoch == 0) return -1;
+    time_t now = time(NULL);
+    time_t period_start = reset_epoch - period_secs;
+    float elapsed_frac = (float)(now - period_start) / period_secs;
+    if (elapsed_frac <= 0 || elapsed_frac > 1) return -1;
+    float max_burn = elapsed_frac * 100.0f;
+    if (usage <= max_burn) return -1;  /* under budget, no recovery needed */
+    /* Recovery at fraction = usage/100 of the period */
+    return 2.0f * M_PI * usage / 100.0f;
+}
+
 static void draw_graph_7d(api_usage_t *usage)
+{
+    float ra = compute_recovery_angle(usage->seven_day.utilization, 7 * 24 * 3600,
+                                       usage->seven_day.resets_at_epoch);
+    draw_polar_screen(usage, 7 * 24 * 3600, 1, 7,
+                      usage->seven_day.resets_at_epoch,
+                      usage->seven_day.utilization, USAGE_COL_SEVEN_DAY, ra);
+}
+
+static void draw_graph_7d_hist(api_usage_t *usage)
 {
     draw_polar_screen(usage, 7 * 24 * 3600, 5, 7,
                       usage->seven_day.resets_at_epoch,
-                      usage->seven_day.utilization, USAGE_COL_SEVEN_DAY);
+                      usage->seven_day.utilization, USAGE_COL_SEVEN_DAY, -1);
 }
 
 static void draw_graph_5h(api_usage_t *usage)
 {
     draw_polar_screen(usage, 5 * 3600, 5, 5,
                       usage->five_hour.resets_at_epoch,
-                      usage->five_hour.utilization, USAGE_COL_FIVE_HOUR);
+                      usage->five_hour.utilization, USAGE_COL_FIVE_HOUR, -1);
 }
 
 /* ─── Clock screen ─────────────────────────────────────────────────── */
@@ -476,10 +498,10 @@ static void draw_settings_screen(void)
 
 /* ─── Display task — sole owner of SPI bus ──────────────────────────── */
 
-typedef enum { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_5H, VIEW_CLOCK, VIEW_COUNT } view_t;
+typedef enum { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_7D_HIST, VIEW_GRAPH_5H, VIEW_CLOCK, VIEW_COUNT } view_t;
 
 /* Configurable screen cycle — loaded from NVS */
-static view_t s_view_cycle[VIEW_COUNT] = { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_5H, VIEW_CLOCK };
+static view_t s_view_cycle[VIEW_COUNT] = { VIEW_USAGE, VIEW_GRAPH_7D, VIEW_GRAPH_7D_HIST, VIEW_GRAPH_5H, VIEW_CLOCK };
 static int s_view_cycle_len = VIEW_COUNT;
 static int s_view_idx = 0;         /* current index in s_view_cycle */
 static api_usage_t s_last_usage = {0};
@@ -563,9 +585,10 @@ static void display_task(void *arg)
                     s_clock_cleared = false;
                     switch (s_current_view) {
                     case VIEW_CLOCK:    draw_clock_screen(); break;
-                    case VIEW_USAGE:    draw_loading_screen(); break;
-                    case VIEW_GRAPH_7D: draw_loading_screen(); break;
-                    case VIEW_GRAPH_5H: draw_loading_screen(); break;
+                    case VIEW_USAGE:        draw_loading_screen(); break;
+                    case VIEW_GRAPH_7D:     draw_loading_screen(); break;
+                    case VIEW_GRAPH_7D_HIST:draw_loading_screen(); break;
+                    case VIEW_GRAPH_5H:     draw_loading_screen(); break;
                     default: break;
                     }
                 }
@@ -596,6 +619,8 @@ static void display_task(void *arg)
                 msg.usage.seven_day.utilization, msg.usage.seven_day.resets_at_epoch);
             if (s_current_view == VIEW_GRAPH_7D)
                 draw_graph_7d(&msg.usage);
+            else if (s_current_view == VIEW_GRAPH_7D_HIST)
+                draw_graph_7d_hist(&msg.usage);
             else if (s_current_view == VIEW_GRAPH_5H)
                 draw_graph_5h(&msg.usage);
             else if (s_current_view == VIEW_USAGE)
@@ -642,7 +667,7 @@ static void display_task(void *arg)
 
         case DISP_MSG_TAP:
             /* Per-screen tap handler */
-            if (s_current_view == VIEW_GRAPH_7D || s_current_view == VIEW_GRAPH_5H) {
+            if (s_current_view == VIEW_GRAPH_7D || s_current_view == VIEW_GRAPH_7D_HIST || s_current_view == VIEW_GRAPH_5H) {
                 s_center_mode = (s_center_mode + 1) % CENTER_COUNT;
                 draw_graph_center(s_graph_pct, s_graph_period, s_graph_reset);
             }
@@ -651,7 +676,8 @@ static void display_task(void *arg)
         redraw_current:
             switch (s_current_view) {
             case VIEW_USAGE:    draw_usage_screen(&s_last_usage); break;
-            case VIEW_GRAPH_7D: draw_graph_7d(&s_last_usage); break;
+            case VIEW_GRAPH_7D:     draw_graph_7d(&s_last_usage); break;
+            case VIEW_GRAPH_7D_HIST:draw_graph_7d_hist(&s_last_usage); break;
             case VIEW_GRAPH_5H: draw_graph_5h(&s_last_usage); break;
             case VIEW_CLOCK:    draw_clock_screen(); break;
             default: break;

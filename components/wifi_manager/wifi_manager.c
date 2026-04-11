@@ -396,7 +396,7 @@ static esp_err_t http_get_api_display(httpd_req_t *req)
 
     /* Default: all screens enabled in order */
     if (strlen(display_cfg) == 0)
-        strcpy(display_cfg, "0:1,1:1,2:1,3:1");
+        strcpy(display_cfg, "0:1,1:1,2:1,3:1,4:1");
 
     /* Build JSON response */
     cJSON *root = cJSON_CreateObject();
@@ -406,14 +406,14 @@ static esp_err_t http_get_api_display(httpd_req_t *req)
     char *saveptr, *token;
     char tmp[64];
     strncpy(tmp, display_cfg, sizeof(tmp) - 1);
-    static const char *names[] = {"Usage Values", "Graph 7-day", "Graph 5-hour", "Clock"};
+    static const char *names[] = {"Usage Values", "Graph 7-day", "Graph 7-day + history", "Graph 5-hour", "Clock"};
 
     for (token = strtok_r(tmp, ",", &saveptr); token; token = strtok_r(NULL, ",", &saveptr)) {
         int id = 0, en = 1;
         sscanf(token, "%d:%d", &id, &en);
         cJSON *item = cJSON_CreateObject();
         cJSON_AddNumberToObject(item, "id", id);
-        cJSON_AddStringToObject(item, "name", (id >= 0 && id < 4) ? names[id] : "?");
+        cJSON_AddStringToObject(item, "name", (id >= 0 && id < 5) ? names[id] : "?");
         cJSON_AddBoolToObject(item, "enabled", en);
         cJSON_AddItemToArray(screens, item);
     }
@@ -890,5 +890,5 @@ bool wifi_mgr_load_last_usage(float *fh, time_t *fh_epoch, float *sd, time_t *sd
 void wifi_mgr_get_display_config(char *buf, size_t buf_len)
 {
     if (nvs_read_str("display_cfg", buf, buf_len) != ESP_OK || strlen(buf) == 0)
-        strncpy(buf, "0:1,1:1,2:1,3:1", buf_len - 1);
+        strncpy(buf, "0:1,1:1,2:1,3:1,4:1", buf_len - 1);
 }

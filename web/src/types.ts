@@ -20,6 +20,7 @@ export interface ScreenEntry {
 export const SCREEN_NAMES: Record<number, string> = {
   0: "Usage Values",
   1: "Graph 7-day",
-  2: "Graph 5-hour",
-  3: "Clock",
+  2: "Graph 7-day + history",
+  3: "Graph 5-hour",
+  4: "Clock",
 };
