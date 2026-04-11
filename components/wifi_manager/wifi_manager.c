@@ -887,6 +887,11 @@ bool wifi_mgr_load_last_usage(float *fh, time_t *fh_epoch, float *sd, time_t *sd
     return true;
 }
 
+void wifi_mgr_set_display_config(const char *cfg)
+{
+    nvs_write_str("display_cfg", cfg);
+}
+
 void wifi_mgr_get_display_config(char *buf, size_t buf_len)
 {
     if (nvs_read_str("display_cfg", buf, buf_len) != ESP_OK || strlen(buf) == 0)

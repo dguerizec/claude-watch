@@ -514,17 +514,33 @@ static void load_display_config(void)
 {
     char cfg[64];
     wifi_mgr_get_display_config(cfg, sizeof(cfg));
+
+    /* Count total entries (enabled + disabled) in the config */
+    int total_entries = 0;
     s_view_cycle_len = 0;
+    char tmp[64];
+    strncpy(tmp, cfg, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = '\0';
     char *saveptr, *tok;
-    for (tok = strtok_r(cfg, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+    for (tok = strtok_r(tmp, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
         int id = 0, en = 1;
         sscanf(tok, "%d:%d", &id, &en);
+        total_entries++;
         if (en && id >= 0 && id < VIEW_COUNT && s_view_cycle_len < VIEW_COUNT)
             s_view_cycle[s_view_cycle_len++] = (view_t)id;
     }
-    if (s_view_cycle_len == 0) {
-        s_view_cycle[0] = VIEW_USAGE;
-        s_view_cycle_len = 1;
+
+    /* If config has fewer entries than VIEW_COUNT, it's stale — reset to defaults */
+    if (total_entries < VIEW_COUNT || s_view_cycle_len == 0) {
+        for (int i = 0; i < VIEW_COUNT; i++)
+            s_view_cycle[i] = (view_t)i;
+        s_view_cycle_len = VIEW_COUNT;
+        /* Persist defaults so web UI stays in sync */
+        char new_cfg[64];
+        int pos = 0;
+        for (int i = 0; i < VIEW_COUNT; i++)
+            pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, "%s%d:1", i ? "," : "", i);
+        wifi_mgr_set_display_config(new_cfg);
+        ESP_LOGI(TAG, "Display config reset to defaults: %s", new_cfg);
     }
     /* Clamp index if cycle shrank, but don't reset to 0 */
     if (s_view_idx >= s_view_cycle_len)

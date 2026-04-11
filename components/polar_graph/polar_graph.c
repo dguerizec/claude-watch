@@ -161,13 +161,13 @@ void polar_graph_draw(esp_lcd_panel_handle_t panel,
             scr_y[i] = sy;
 
             /* Week index: 0 = current, 1 = previous, ... */
-            int w = (int)((float)(period_end - points[i].timestamp) / period_secs);
-            if (w < 0) w = 0;
-            if (w >= num_rotations) w = num_rotations - 1;
+            int w_actual = (int)((float)(period_end - points[i].timestamp) / period_secs);
+            if (w_actual < 0) w_actual = 0;
+            int w = (w_actual >= num_rotations) ? num_rotations - 1 : w_actual;
             pt_week[i] = w;
 
-            /* Color: green/red based on burn rate, dimmed by week */
-            time_t week_start = period_end - (w + 1) * (time_t)period_secs;
+            /* Color: green/red based on burn rate — use actual period, not clamped */
+            time_t week_start = period_end - (w_actual + 1) * (time_t)period_secs;
             float br = burn_rate_at(points[i].timestamp, week_start, period_secs);
             bool over = (points[i].value >= br);
             pt_color[i] = sw(over ? reds[w] : greens[w]);

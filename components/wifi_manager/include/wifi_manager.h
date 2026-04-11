@@ -85,6 +85,11 @@ void wifi_mgr_save_last_usage(float fh, time_t fh_epoch, float sd, time_t sd_epo
 bool wifi_mgr_load_last_usage(float *fh, time_t *fh_epoch, float *sd, time_t *sd_epoch);
 
 /**
+ * Save display config to NVS.
+ */
+void wifi_mgr_set_display_config(const char *cfg);
+
+/**
  * Read display config from NVS.
  * Format: "id:enabled,id:enabled,..." e.g. "0:1,1:1,2:1,3:1"
  * @param buf     Output buffer
