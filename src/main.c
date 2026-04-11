@@ -279,23 +279,35 @@ static void draw_loading_screen(void)
     display_text_draw_string_centered(s_panel, 108, "Loading...", COLOR_WHITE, COLOR_BLACK, 2);
 }
 
+static uint16_t usage_color(float utilization, time_t reset_epoch, int period_secs)
+{
+    if (reset_epoch == 0) return COLOR_GREEN;
+    time_t now = time(NULL);
+    time_t period_start = reset_epoch - period_secs;
+    float elapsed_frac = (float)(now - period_start) / period_secs;
+    if (elapsed_frac < 0) elapsed_frac = 0;
+    if (elapsed_frac > 1) elapsed_frac = 1;
+    float max_burn = elapsed_frac * 100.0f;
+    return (utilization > max_burn) ? COLOR_RED : COLOR_GREEN;
+}
+
 static void draw_usage_screen(api_usage_t *usage)
 {
     fill_screen(s_panel, COLOR_BLACK);
     display_text_draw_string_centered(s_panel, 30, "Claude Usage", COLOR_WHITE, COLOR_BLACK, 2);
 
     char line[48];
+    uint16_t c5h = usage_color(usage->five_hour.utilization, usage->five_hour.resets_at_epoch, 5 * 3600);
     snprintf(line, sizeof(line), "5h: %.0f%%", usage->five_hour.utilization);
-    display_text_draw_string_centered(s_panel, 75, line, COLOR_GREEN, COLOR_BLACK, 3);
+    display_text_draw_string_centered(s_panel, 75, line, c5h, COLOR_BLACK, 3);
     snprintf(line, sizeof(line), "reset %s", usage->five_hour.resets_at);
     display_text_draw_string_centered(s_panel, 100, line, COLOR_WHITE, COLOR_BLACK, 1);
 
+    uint16_t c7d = usage_color(usage->seven_day.utilization, usage->seven_day.resets_at_epoch, 7 * 24 * 3600);
     snprintf(line, sizeof(line), "7d: %.0f%%", usage->seven_day.utilization);
-    display_text_draw_string_centered(s_panel, 135, line, COLOR_GREEN, COLOR_BLACK, 3);
+    display_text_draw_string_centered(s_panel, 135, line, c7d, COLOR_BLACK, 3);
     snprintf(line, sizeof(line), "reset %s", usage->seven_day.resets_at);
     display_text_draw_string_centered(s_panel, 160, line, COLOR_WHITE, COLOR_BLACK, 1);
-
-    display_text_draw_string_centered(s_panel, 210, "tap: graph", COLOR_DKGREEN, COLOR_BLACK, 1);
 }
 
 static void draw_error_screen(const char *error)
