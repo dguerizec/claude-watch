@@ -104,14 +104,14 @@ static inline float burn_rate_at(time_t ts, time_t week_start, int psecs)
 
 #define MAX_ROTATIONS 8
 
-/* Green (under budget): bright → dim */
+/* Green (under budget): bright → dim.  History shifts to cyan (+blue). */
 static const uint16_t greens[MAX_ROTATIONS] = {
-    0x07E0, 0x04E0, 0x02E0, 0x0160, 0x00C0, 0x0060, 0x0040, 0x0020,
+    0x07E0, 0x04F3, 0x02EB, 0x0165, 0x00C3, 0x0061, 0x0041, 0x0021,
 };
 
-/* Red (over budget): bright → dim */
+/* Red (over budget): bright → dim.  History shifts to violet (+blue). */
 static const uint16_t reds[MAX_ROTATIONS] = {
-    0xF800, 0xA000, 0x6000, 0x3000, 0x1800, 0x1000, 0x0800, 0x0800,
+    0xF800, 0xA014, 0x600C, 0x3006, 0x1803, 0x1002, 0x0801, 0x0801,
 };
 
 /* ── Public API ──────────────────────────────────────────────────────── */
